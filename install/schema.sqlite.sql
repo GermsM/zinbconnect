@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS subscriptions (
   rate REAL NOT NULL DEFAULT 0,
   duration_days INTEGER NULL,
   duration_minutes INTEGER NULL,
+  data_limit_bytes INTEGER NULL,          -- plafond par ticket (NULL = illimité)
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -79,4 +80,57 @@ CREATE TABLE IF NOT EXISTS audit_log (
   actor TEXT NULL,
   ip TEXT NULL,
   details TEXT NULL
+);
+
+-- ============================================================
+-- Phase 3 — tickets imprimables, plafonds, réglages, consommation
+-- ============================================================
+CREATE TABLE IF NOT EXISTS batches (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  reference TEXT NOT NULL UNIQUE,
+  subscription_id INTEGER NULL,
+  quantity INTEGER NOT NULL DEFAULT 0,
+  unit_price REAL NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  created_by TEXT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tickets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  batch_id INTEGER NULL,
+  subscription_id INTEGER NULL,
+  code_hash TEXT NOT NULL UNIQUE,
+  code_enc TEXT NULL,
+  status TEXT NOT NULL DEFAULT 'available',
+  price REAL NOT NULL DEFAULT 0,
+  data_limit_bytes INTEGER NULL,
+  bytes_used INTEGER NOT NULL DEFAULT 0,
+  contact TEXT NULL,
+  contact_type TEXT NULL,
+  created_at TEXT NOT NULL,
+  activated_at TEXT NULL,
+  expires_at TEXT NULL,
+  revoked_at TEXT NULL,
+  last_sync_at TEXT NULL,
+  reseller_id INTEGER NULL,
+  note TEXT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ticket_status ON tickets(status);
+CREATE INDEX IF NOT EXISTS idx_ticket_expires ON tickets(expires_at);
+CREATE INDEX IF NOT EXISTS idx_ticket_contact ON tickets(contact);
+CREATE INDEX IF NOT EXISTS idx_ticket_batch ON tickets(batch_id);
+
+CREATE TABLE IF NOT EXISTS settings (
+  k TEXT PRIMARY KEY,
+  v TEXT NULL
+);
+
+CREATE TABLE IF NOT EXISTS usage_samples (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  sample_date TEXT NOT NULL,
+  bytes_down INTEGER NOT NULL DEFAULT 0,
+  bytes_up INTEGER NOT NULL DEFAULT 0,
+  source TEXT NOT NULL DEFAULT 'router',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE (sample_date, source)
 );

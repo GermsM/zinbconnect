@@ -18,6 +18,7 @@ if (PHP_SAPI !== 'cli') {
 
 $_SERVER['PHP_SELF'] = $_SERVER['PHP_SELF'] ?? 'cli';
 require_once __DIR__ . '/../lib/security.php';
+require_once __DIR__ . '/../lib/tickets.php';
 
 function cli_out(string $msg): void { echo $msg, PHP_EOL; }
 
@@ -59,21 +60,27 @@ cli_out('>>> Tables créées (si absentes).');
 // ------------------------------------------------------------------
 // 3) Forfaits par défaut (4 tarifs de Kitutu)
 // ------------------------------------------------------------------
+$MB = 1024 * 1024;
 $defaults = [
-    ['1 h — 1 000 FC',  1000, 0, 60    ],
-    ['12 h — 1 500 FC', 1500, 0, 720   ],
-    ['24 h — 2 500 FC', 2500, 0, 1440  ],
-    ['3 jours — 5 000 FC', 5000, 3, 0 ],
+    // [nom, prix FC, jours, minutes, plafond de données]
+    ['1 h — 1 000 FC',  1000, 0, 60,   100 * $MB],
+    ['12 h — 1 500 FC', 1500, 0, 720,  300 * $MB],
+    ['24 h — 2 500 FC', 2500, 0, 1440, 500 * $MB],
+    ['3 jours — 5 000 FC', 5000, 3, 0, 1024 * $MB],
 ];
 $stmt = $db->prepare('SELECT COUNT(*) c FROM subscriptions');
 $stmt->execute();
 if ((int)$stmt->fetch()['c'] === 0) {
-    $ins = $db->prepare('INSERT INTO subscriptions (name, rate, duration_days, duration_minutes) VALUES (?,?,?,?)');
-    foreach ($defaults as $d) { $ins->execute([$d[0], $d[1], $d[2], $d[3]]); }
-    cli_out('>>> Forfaits par défaut insérés : ' . count($defaults));
+    $ins = $db->prepare('INSERT INTO subscriptions (name, rate, duration_days, duration_minutes, data_limit_bytes) VALUES (?,?,?,?,?)');
+    foreach ($defaults as $d) { $ins->execute([$d[0], $d[1], $d[2], $d[3], $d[4]]); }
+    cli_out('>>> Forfaits par défaut insérés : ' . count($defaults) . ' (avec plafonds de données)');
 } else {
     cli_out('>>> Forfaits existants : aucun changement.');
 }
+
+// Réglages par défaut (quota Starlink 500 Gio, devise, commission…)
+settings_seed();
+cli_out('>>> Réglages par défaut prêts.');
 
 // ------------------------------------------------------------------
 // 4) Compte administrateur (variables ADMIN_IDENTIFIER / ADMIN_PASSWORD du .env)
@@ -104,23 +111,27 @@ if ($adminId && $adminPw && is_string($adminId) && is_string($adminPw)) {
 // 5) Mode démo : compte admin démonstration + codes de test
 // ------------------------------------------------------------------
 if (in_array('--demo', $argv ?? [], true)) {
-    $stmt = $db->prepare('SELECT COUNT(*) c FROM access_codes');
+    $stmt = $db->prepare('SELECT COUNT(*) c FROM tickets');
     $stmt->execute();
     if ((int)$stmt->fetch()['c'] === 0) {
-        // 10 codes de test, exportés dans un CSV (c'est ce lot que l'admin imprimerait)
-        $csv  = "code,forfait\n";
-        $ins  = $db->prepare("INSERT INTO access_codes (code, code_hash, status, subscription_id) VALUES (?,?, 'available', NULL)");
-        foreach (range(1, 10) as $i) {
-            $code = generate_code();
-            $ins->execute([$code, code_hash($code)]);
-            $csv .= $code . ",\n";
+        $plan = db()->query('SELECT id FROM subscriptions ORDER BY id LIMIT 1')->fetch();
+        if ($plan) {
+            $batch = generate_batch((int)$plan['id'], 10, null, 'install');
+            if ($batch['ok']) {
+                $csv = "code;lot\n";
+                foreach ($batch['codes'] as $code) {
+                    $csv .= $code . ';' . $batch['reference'] . "\n";
+                }
+                $backupDir = app_root() . '/backups';
+                if (!is_dir($backupDir)) { @mkdir($backupDir, 0775, true); }
+                file_put_contents($backupDir . '/demo_codes_' . date('Ymd-His') . '.csv', $csv);
+                cli_out('>>> Lot de démonstration ' . $batch['reference'] . ' : 10 tickets (PDF depuis la console admin).');
+            } else {
+                cli_out('>>> Lot de démonstration impossible : ' . $batch['error']);
+            }
         }
-        $backupDir = app_root() . '/backups';
-        if (!is_dir($backupDir)) { @mkdir($backupDir, 0775, true); }
-        file_put_contents($backupDir . '/demo_codes_' . date('Ymd-His') . '.csv', $csv);
-        cli_out('>>> 10 codes de test en stock ; liste exportée dans backups/ (à conserver hors ligne).');
     } else {
-        cli_out('>>> Stock déjà rempli : codes de test non ajoutés.');
+        cli_out('>>> Tickets déjà présents : démonstration non ajoutée.');
     }
 }
 
