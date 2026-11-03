@@ -1,23 +1,28 @@
 <?php
 /**
- * Zinbconnect — Vérification d'un code d'accès (point d'entrée conservé pour
- * compatibilité ; l'entrée canonique est l'action "validate_code" d'index.php).
- * Lecture seule : un code de stock (access_codes) ne peut PAS s'activer ici.
- * Protégé comme le portail : CSRF + anti-brute-force (20 essais / 5 min / IP).
+ * Zinbconnect — validation d'un code depuis le portail.
+ *
+ * - un code encore « available » est activé ici (première utilisation) ;
+ * - un code « active » renvoie simplement le temps et les données restants ;
+ * - expiré / révoqué / quota atteint : refus avec un motif clair.
+ *
+ * Anti-brute-force : 20 essais / 5 min par IP, plus une pause progressive
+ * par code (le code lui-même n'est pas un secret assez long pour être deviné).
  */
 declare(strict_types=1);
 
 require_once __DIR__ . '/lib/security.php';
+require_once __DIR__ . '/lib/tickets.php';
 
 security_headers();
 session_boot();
 
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
-    json_out(['success' => false, 'message' => 'invalidMethod'], 405);
+    json_out(['valid' => false, 'reason' => 'invalidMethod'], 405);
 }
 
 $input = json_input();
-if ($input === []) { // compat : le corps peut aussi être application/x-www-form-urlencoded
+if ($input === []) {
     $input = $_POST;
 }
 csrf_require($input);
@@ -27,15 +32,68 @@ if ($code === '') {
     json_out(['valid' => false, 'reason' => 'invalid']);
 }
 
+// Limite par IP (le portail est public, derrière le hotspot).
 if (!rate_limit_check('code_entry', client_ip(), 20, 300)) {
     audit('code_entry_ratelimited', null, 'ip=' . client_ip());
     json_out(['valid' => false, 'reason' => 'rateLimited']);
 }
-
-$result = check_code_public($code);
-if ($result['valid']) {
-    $_SESSION['access_code'] = $code;
-    $_SESSION['code_expiry'] = $result['expiration_date'];
-    audit('code_validated', null, 'hash=' . substr(code_hash($code), 0, 8) . '…');
+// Limite par code : 8 essais / 10 min (protection contre l'acharnement ciblé).
+if (!rate_limit_check('code_guess', $code, 8, 600)) {
+    audit('code_guess_ratelimited', null, 'hash=' . substr(code_hash($code), 0, 8) . '…');
+    json_out(['valid' => false, 'reason' => 'rateLimited']);
 }
-json_out($result);
+
+$ticket = ticket_by_code($code);
+if (!$ticket) {
+    audit('code_invalid', null, 'ip=' . client_ip());
+    json_out(['valid' => false, 'reason' => 'invalid']);
+}
+
+$state = ticket_state($ticket);
+
+if ($state === 'available') {
+    $activation = activate_ticket($code, null, null);
+    if (!$activation['ok']) {
+        // Course avec une autre requête : on relit l'état réel.
+        $ticket = ticket_by_code($code);
+        $state  = $ticket ? ticket_state($ticket) : 'invalid';
+    } else {
+        $ticket = $activation['ticket'];
+        $state  = 'active';
+    }
+}
+
+if ($state !== 'active') {
+    $reason = match ($state) {
+        'expired' => 'expired',
+        'revoked' => 'revoked',
+        'used'    => 'used',
+        default   => 'invalid',
+    };
+    json_out([
+        'valid'  => false,
+        'reason' => $reason,
+        'expires_at' => $ticket['expires_at'] ?? null,
+    ]);
+}
+
+$plan = plan_by_id((int)$ticket['subscription_id']);
+$remaining = ticket_remaining_seconds($ticket);
+$limit     = $ticket['data_limit_bytes'] !== null && $ticket['data_limit_bytes'] !== ''
+    ? (int)$ticket['data_limit_bytes']
+    : null;
+
+$_SESSION['access_code'] = $code;
+$_SESSION['code_expiry'] = $ticket['expires_at'];
+audit('code_validated', null, 'ticket=' . $ticket['id']);
+
+json_out([
+    'valid'             => true,
+    'plan'              => $plan['name'] ?? '',
+    'expires_at'        => $ticket['expires_at'],
+    'expires_at_fr'     => date('d/m/Y à H:i', strtotime((string)$ticket['expires_at'])),
+    'remaining_seconds' => $remaining,
+    'data_limit'        => $limit,
+    'bytes_used'        => (int)$ticket['bytes_used'],
+    'remaining_bytes'   => ticket_remaining_bytes($ticket),
+]);

@@ -1,1182 +1,271 @@
 <?php
 /**
- * Zinbconnect — Portail public (Phase 2 : sécurisé)
- * - Configuration via .env (crash DB_PORT corrigé), base PDO préparée
- * - Validation de code : lecture seule + anti-brute-force (20 tentatives / 5 min / IP) + CSRF
- * - Les actions non authentifiées "purchase_subscription" et "assign_code" sont
- *   SUPPRIMÉES : elles permettaient d'obtenir un code gratuit sans paiement (faille
- *   critique de l'audit). Les ventes passent désormais par le tableau de bord admin
- *   (authentifié), puis en Phase 3 par la génération de lots de tickets.
+ * Zinbconnect — portail captif (page publique).
+ *
+ * Volontairement très légère : aucun CDN, aucune police externe, une seule
+ * requête réseau (le CSS est inclus). Objectif < 30 Ko pour rester utilisable
+ * sur un vieux téléphone et sur une connexion lente.
+ *
+ * Ce que fait la page :
+ *   - affiche les forfaits et les prix ;
+ *   - un seul champ : le code du ticket ;
+ *   - messages d'erreur clairs (invalide / expiré / déjà utilisé / révoqué) ;
+ *   - après validation : temps et données restants, décompte en direct.
+ *
+ * L'autorisation réelle sur le routeur MikroTik est branchée en Phase 4.
  */
 declare(strict_types=1);
 
 require_once __DIR__ . '/lib/security.php';
+require_once __DIR__ . '/lib/tickets.php';
 
 security_headers();
 session_boot();
 
-// Nettoyage léger : une carte expirée n'est plus jamais valide.
-cleanup_expired_codes();
-
-/** Cookie "commodité" pour le JS : la base reste la seule source de vérité. */
-function set_access_cookies(string $code, string $expiryDate): void
-{
-    setcookie('access_code', $code, [
-        'expires'  => strtotime($expiryDate) ?: time() + 3600,
-        'path'     => '/',
-        'secure'   => is_https(),     // chiffrement automatique en production HTTPS
-        'httponly' => false,          // lu par le JS de la page (rappels d'expiration)
-        'samesite' => 'Lax',
-    ]);
-    setcookie('expiration_date', $expiryDate, [
-        'expires'  => strtotime($expiryDate) ?: time() + 3600,
-        'path'     => '/',
-        'secure'   => is_https(),
-        'httponly' => false,
-        'samesite' => 'Lax',
-    ]);
-}
-
-// Forfaits pour la modale (lecture PDO préparée, échappée à l'affichage)
-$subscriptions = [];
+$portalName = setting('portal_name') ?? 'Zinbconnect';
+$plans = [];
 try {
-    $subscriptions = db()->query('SELECT id, name, rate FROM subscriptions ORDER BY id')->fetchAll();
+    $plans = plans_all();
 } catch (Throwable $e) {
-    audit('subscriptions_load_error', null, $e->getMessage());
+    // Base non migrée : le portail reste lisible, la validation affichera une erreur.
+    $plans = [];
 }
-
-// Handle AJAX requests
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $input = json_input();
-    csrf_require($input);
-
-    switch ((string)($input['action'] ?? '')) {
-        case 'validate_code':
-            $code = normalize_code((string)($input['code'] ?? ''));
-            if ($code === '') {
-                json_out(['valid' => false, 'reason' => 'invalid']);
-            }
-            // Anti-brute-force pour deviner un code : 20 essais / 5 min / IP
-            // (12 caractères non ambigus = 60 bits, la force brute de toute façon hors de portée)
-            if (!rate_limit_check('code_entry', client_ip(), 20, 300)) {
-                audit('code_entry_ratelimited', null, 'ip=' . client_ip());
-                json_out(['valid' => false, 'reason' => 'rateLimited']);
-            }
-
-            $result = check_code_public($code);
-            if ($result['valid']) {
-                // Session côté serveur + cookie de commodité (déchiffré côté JS uniquement)
-                $_SESSION['access_code'] = $code;
-                $_SESSION['code_expiry'] = $result['expiration_date'];
-                set_access_cookies($code, $result['expiration_date']);
-                audit('code_validated', null, 'hash=' . substr(code_hash($code), 0, 8) . '…');
-            }
-            json_out($result);
-            break;
-
-        case 'purchase_subscription':
-        case 'assign_code':
-            // Actions fermées : faille critique corrigée (codes gratuits sans paiement).
-            audit('free_code_attempt', null, 'action=' . (string)($input['action'] ?? '') . ' ip=' . client_ip());
-            json_out(['success' => false, 'message' => 'purchaseDisabled'], 410);
-
-        default:
-            json_out(['success' => false, 'message' => 'invalidAction'], 400);
-    }
-}
+$csrf = csrf_token();
 ?>
-
 <!DOCTYPE html>
-<html lang="en">
+<html lang="fr">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ZinbConnect - Bukavu</title>
-    <meta name="csrf-token" content="<?php echo html(csrf_token()); ?>">
-    <meta name="csrf-token" content="<?php echo html(csrf_token()); ?>">
-    <link rel="icon" type="image/x-icon" href="download.png">
-    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://kit.fontawesome.com/4a5d7f6b46.js" crossorigin="anonymous"></script>
-    <style>
-        @keyframes pulse {
-            0% { transform: scale(1); opacity: 0.7; }
-            50% { transform: scale(1.2); opacity: 1; }
-            100% { transform: scale(1); opacity: 0.7; }
-        }
-        @keyframes gradient {
-            0% { background-position: 0% 50%; }
-            50% { background-position: 100% 50%; }
-            100% { background-position: 0% 50%; }
-        }
-        .wifi-icon, .web-icon, .reseller-icon, .table-icon, .reseller-profile-icon, .button-icon {
-            animation: pulse 2s infinite;
-            color: #d8b4fe;
-        }
-        .dark .wifi-icon, .dark .web-icon, .dark .reseller-icon, .dark .table-icon, .dark .reseller-profile-icon, .dark .button-icon {
-            color: #a78bfa;
-        }
-        .bg-gradient-animate {
-            background: linear-gradient(45deg, #d8b4fe, #f3e8ff, #d8b4fe, #f3e8ff);
-            background-size: 400%;
-            animation: gradient 15s ease infinite;
-        }
-        .dark .bg-gradient-animate {
-            background: linear-gradient(45deg, #6b7280, #1f2937, #6b7280, #1f2937);
-        }
-        tr {
-            transition: transform 0.2s ease-in-out;
-        }
-        tr:hover {
-            transform: scale(1.05);
-        }
-        .scrollable-table::-webkit-scrollbar {
-            width: 8px;
-        }
-        .scrollable-table::-webkit-scrollbar-track {
-            background: #f3e8ff;
-            border-radius: 4px;
-        }
-        .scrollable-table::-webkit-scrollbar-thumb {
-            background: #d8b4fe;
-            border-radius: 4px;
-        }
-        .dark .scrollable-table::-webkit-scrollbar-track {
-            background: #1f2937;
-        }
-        .dark .scrollable-table::-webkit-scrollbar-thumb {
-            background: #a78bfa;
-        }
-        .signal-icon-container {
-            position: relative;
-            display: inline-flex;
-            align-items: flex-end;
-            height: 1.5rem;
-            width: 1.5rem;
-        }
-        .signal-bar {
-            width: 4px;
-            background: #d8b4fe;
-            margin-left: 2px;
-            transform-origin: bottom;
-        }
-        .dark .signal-bar {
-            background: #a78bfa;
-        }
-        .signal-bar:nth-child(1) { height: 0.5rem; animation: signal 1.5s infinite; }
-        .signal-bar:nth-child(2) { height: 0.8rem; animation: signal 1.5s infinite 0.3s; }
-        .signal-bar:nth-child(3) { height: 1.2rem; animation: signal 1.5s infinite 0.6s; }
-        .signal-icon-container:hover .signal-bar {
-            animation-duration: 1s;
-        }
-        @keyframes signal {
-            0% { transform: scaleY(1); }
-            50% { transform: scaleY(1.5); }
-            100% { transform: scaleY(1); }
-        }
-    </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#4c1d95">
+<meta name="csrf-token" content="<?php echo html($csrf); ?>">
+<title><?php echo html($portalName); ?> — Connexion Wi-Fi</title>
+<link rel="icon" href="download.png">
+<style>
+:root{--v:#5b21b6;--v2:#7c3aed;--ok:#15803d;--ko:#b91c1c;--bg:#f5f3ff;--card:#fff;--txt:#1f2937;--muted:#6b7280;--line:#e5e7eb}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;background:var(--bg);color:var(--txt);line-height:1.45;font-size:17px}
+.wrap{max-width:520px;margin:0 auto;padding:16px 14px 40px}
+header{display:flex;align-items:center;gap:10px;padding:10px 0 14px}
+.logo{width:38px;height:38px;border-radius:10px;background:var(--v);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:18px}
+h1{font-size:19px;margin:0;line-height:1.2}
+header p{margin:2px 0 0;font-size:13px;color:var(--muted)}
+.card{background:var(--card);border-radius:14px;padding:18px;box-shadow:0 1px 3px rgba(0,0,0,.08);margin-bottom:14px}
+label{display:block;font-weight:600;font-size:15px;margin-bottom:8px}
+input[type=text]{width:100%;padding:14px 12px;font-size:22px;letter-spacing:2px;font-family:ui-monospace,Consolas,monospace;text-transform:uppercase;border:2px solid var(--line);border-radius:10px;background:#fff;color:var(--txt)}
+input[type=text]:focus{outline:none;border-color:var(--v2);box-shadow:0 0 0 3px rgba(124,58,237,.15)}
+button{width:100%;margin-top:12px;padding:15px;font-size:18px;font-weight:700;color:#fff;background:var(--v);border:0;border-radius:10px;cursor:pointer}
+button:disabled{opacity:.6}
+.hint{font-size:13px;color:var(--muted);margin-top:8px}
+.msg{margin-top:14px;padding:14px;border-radius:10px;font-size:15px;display:none}
+.msg.show{display:block}
+.msg.ok{background:#f0fdf4;border:1px solid #bbf7d0;color:#14532d}
+.msg.ko{background:#fef2f2;border:1px solid #fecaca;color:#7f1d1d}
+.msg b{font-size:17px;display:block;margin-bottom:4px}
+.big{font-size:26px;font-weight:700;font-variant-numeric:tabular-nums}
+.rows{display:flex;gap:10px;margin-top:10px;flex-wrap:wrap}
+.row{flex:1 1 120px;background:#faf5ff;border-radius:8px;padding:8px 10px}
+.row span{display:block;font-size:12px;color:var(--muted)}
+.row strong{font-size:16px}
+h2{font-size:15px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin:0 0 10px}
+.plan{display:flex;justify-content:space-between;align-items:baseline;padding:9px 0;border-bottom:1px solid var(--line);font-size:15px}
+.plan:last-child{border-bottom:0}
+.plan strong{font-size:16px;color:var(--v)}
+.plan em{font-style:normal;color:var(--muted);font-size:13px}
+details{background:var(--card);border-radius:14px;padding:14px 18px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+summary{cursor:pointer;font-weight:600;font-size:15px}
+details p,details li{font-size:14px;color:#374151}
+details ul{padding-left:18px;margin:8px 0}
+footer{text-align:center;font-size:12px;color:var(--muted);margin-top:18px}
+footer a{color:var(--v)}
+.note{font-size:12px;color:var(--muted);text-align:center;margin-top:8px}
+</style>
 </head>
-<body class="min-h-screen bg-gradient-animate flex flex-col font-sans text-gray-900 dark:text-gray-100 dark:bg-gray-900 transition-colors duration-300">
-    <!-- Header -->
-    <header class="w-full p-4 flex justify-between items-center bg-white dark:bg-gray-800 shadow-md">
-        <div class="flex space-x-2">
-            <button id="resellerBtn" class="px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 transition flex items-center">
-                <i class="fas fa-store text-lg reseller-icon mr-1"></i>
-                <span id="resellerText">Reseller</span>
-            </button>
-            <button id="disconnectBtn" class="px-4 py-2 bg-red-600 text-white rounded-md hover:bg-red-700 transition flex items-center hidden">
-                <i class="fas fa-sign-out-alt text-lg mr-1"></i>
-                <span>Disconnect</span>
-            </button>
-        </div>
-        <div class="flex space-x-2">
-            <select id="languageSelect" class="px-2 py-1 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100">
-                <option value="en">English</option>
-                <option value="fr">Français</option>
-                <option value="sw">Kiswahili</option>
-            </select>
-        </div>
-    </header>
-
-    <!-- Main Content -->
-    <main class="flex-grow flex flex-col items-center justify-center p-4">
-        <div class="text-center mb-8">
-            <h1 class="text-4xl font-bold text-purple-600 dark:text-purple-400 flex items-center justify-center animate-pulse">
-                <div class="signal-icon-container mr-2">
-                    <div class="signal-bar"></div>
-                    <div class="signal-bar"></div>
-                    <div class="signal-bar"></div>
-                </div>
-                ZinbConnect
-            </h1>
-            <p id="welcomeText" class="text-lg mt-2">Welcome to ZinbConnect! Enter your access code to connect.</p>
-        </div>
-        <div class="w-full max-w-md bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg">
-            <div class="flex justify-center mb-4">
-                <i class="fas fa-wifi text-4xl text-purple-600 dark:text-purple-400 wifi-icon"></i>
-            </div>
-            <div id="connectFormContainer" class="space-y-4">
-                <input id="accessCode" type="text" placeholder="Enter Access Code" class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100" required>
-                <button id="connectBtn" class="w-full px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 transition">Connect</button>
-            </div>
-            <p id="notification" class="mt-4 text-red-500 hidden"></p>
-            <div class="mt-6 text-center">
-                <button id="buySubscriptionBtn" class="text-purple-600 dark:text-purple-400 hover:underline">Buy a Subscription</button>
-            </div>
-        </div>
-    </main>
-
-    <!-- Connection Status Modal -->
-    <div id="connectionModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden">
-        <div class="bg-gradient-animate p-6 rounded-lg shadow-lg max-w-sm w-full text-center">
-            <div id="connectionIcon" class="text-4xl mb-4"></div>
-            <h2 id="connectionTitle" class="text-2xl font-bold mb-2 text-purple-600 dark:text-purple-400"></h2>
-            <p id="connectionMessage" class="text-gray-900 dark:text-gray-100 mb-4"></p>
-            <button id="closeConnectionModal" class="px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 transition">OK</button>
-        </div>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">Z</div>
+    <div>
+      <h1><?php echo html($portalName); ?></h1>
+      <p>Wi-Fi à Kitutu — entrez votre code pour vous connecter</p>
     </div>
+  </header>
 
-    <!-- Subscription Modal -->
-    <div id="subscriptionModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden">
-        <div class="bg-gradient-animate p-6 rounded-lg shadow-lg max-w-lg w-full">
-            <h2 id="subscriptionTitle" class="text-2xl font-bold mb-4 text-purple-600 dark:text-purple-400">Choose Subscription Option</h2>
-            <div class="flex space-x-4">
-                <button id="buyResellerBtn" class="sm:w-auto w-full px-3 py-1 text-sm bg-purple-600 text-white rounded-md hover:bg-purple-700 transition flex items-center">
-                    <i class="fas fa-store text-sm button-icon mr-1"></i>
-                    <span>Buy from a Reseller</span>
-                </button>
-                <button id="buyMobileMoneyBtn" class="sm:w-auto w-full px-3 py-1 text-sm bg-purple-600 text-white rounded-md hover:bg-purple-700 transition flex items-center">
-                    <i class="fas fa-mobile-alt text-sm button-icon mr-1"></i>
-                    <span>Buy with Mobile Money</span>
-                </button>
+  <main>
+    <section class="card">
+      <form id="codeForm" autocomplete="off" novalidate>
+        <label for="code">Votre code</label>
+        <input id="code" name="code" type="text" inputmode="text" autocomplete="off"
+               autocapitalize="characters" spellcheck="false" maxlength="20"
+               placeholder="EX : K7M2 PQRS 9TUV" aria-describedby="codeHint" required>
+        <p class="hint" id="codeHint">12 caractères, sans les lettres 0, O, 1, I et l.</p>
+        <button id="submitBtn" type="submit">Se connecter</button>
+      </form>
+
+      <div id="message" class="msg" role="status" aria-live="polite"></div>
+    </section>
+
+    <section class="card">
+      <h2>Forfaits</h2>
+      <?php if ($plans): ?>
+        <?php foreach ($plans as $p): ?>
+          <?php
+            $dur = plan_duration_seconds($p);
+            $label = format_duration($dur);
+            $limit = plan_data_limit($p);
+          ?>
+          <div class="plan">
+            <div>
+              <strong><?php echo html(format_money((float)$p['rate'])); ?></strong>
+              <em> · <?php echo html($label); ?></em>
             </div>
-            <button id="closeSubscriptionModal" class="mt-4 text-gray-600 dark:text-gray-400 hover:underline">Close</button>
-        </div>
-    </div>
+            <div><em><?php echo $limit ? html(format_bytes($limit)) : 'illimité'; ?></em></div>
+          </div>
+        <?php endforeach; ?>
+      <?php else: ?>
+        <p class="hint">Les forfaits s'afficheront dès que la base sera initialisée.</p>
+      <?php endif; ?>
+    </section>
 
-    <!-- Reseller Modal -->
-    <div id="resellerModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden">
-        <div class="bg-gradient-animate p-6 rounded-lg shadow-lg max-w-4xl w-full">
-            <h2 id="resellerTitle" class="text-2xl font-bold mb-4 text-purple-600 dark:text-purple-400">Reseller / Admin Panel</h2>
-            <div id="bundles" class="mb-4">
-                <div class="overflow-y-auto max-h-64 scrollable-table">
-                    <table class="w-full border-collapse text-sm">
-                        <thead>
-                            <tr class="bg-purple-600 text-white sticky top-0">
-                                <th id="forfaits" class="p-2 rounded-tl-lg flex items-center justify-center">
-                                    <i class="fas fa-star text-sm table-icon mr-1"></i> Forfaits
-                                </th>
-                                <th id="duree" class="p-2 flex items-center justify-center">
-                                    <i class="fas fa-clock text-sm table-icon mr-1"></i> Durée
-                                </th>
-                                <th id="tarifs" class="p-2 flex items-center justify-center">
-                                    <i class="fas fa-money-bill text-sm table-icon mr-1"></i> Tarifs
-                                </th>
-                                <th id="type" class="p-2 flex items-center justify-center">
-                                    <i class="fas fa-tags text-sm table-icon mr-1"></i> Type
-                                </th>
-                                <th id="debit" class="p-2 rounded-tr-lg flex items-center justify-center">
-                                    <i class="fas fa-tachometer-alt text-sm table-icon mr-1"></i> Débit
-                                </th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <tr class="bg-gray-50 dark:bg-gray-700 hover:bg-purple-100 dark:hover:bg-purple-900">
-                                <td class="p-2 text-center" id="bundle-premium">Premium</td>
-                                <td class="p-2 text-center" id="bundle-journalier">Journalier</td>
-                                <td class="p-2 text-center">1 000 CDF</td>
-                                <td class="p-2 text-center" id="bundle-illimitee">Illimitée</td>
-                                <td class="p-2 text-center" id="bundle-debitPremium">525 Kb/s up, 2 Mb/s down</td>
-                            </tr>
-                            <tr class="hover:bg-purple-100 dark:hover:bg-purple-900">
-                                <td class="p-2 text-center" id="bundle-premium">Premium</td>
-                                <td class="p-2 text-center" id="bundle-troisJours">3 jours</td>
-                                <td class="p-2 text-center">2 500 CDF</td>
-                                <td class="p-2 text-center" id="bundle-illimitee">Illimitée</td>
-                                <td class="p-2 text-center" id="bundle-debitPremium">525 Kb/s up, 2 Mb/s down</td>
-                            </tr>
-                            <tr class="bg-gray-50 dark:bg-gray-700 hover:bg-purple-100 dark:hover:bg-purple-900">
-                                <td class="p-2 text-center" id="bundle-premium">Premium</td>
-                                <td class="p-2 text-center" id="bundle-hebdomadaire">Hebdomadaire</td>
-                                <td class="p-2 text-center">5 000 CDF</td>
-                                <td class="p-2 text-center" id="bundle-illimitee">Illimitée</td>
-                                <td class="p-2 text-center" id="bundle-debitPremium">525 Kb/s up, 2 Mb/s down</td>
-                            </tr>
-                            <tr class="hover:bg-purple-100 dark:hover:bg-purple-900">
-                                <td class="p-2 text-center" id="bundle-premium">Premium</td>
-                                <td class="p-2 text-center" id="bundle-mensuel">Mensuel</td>
-                                <td class="p-2 text-center">20 000 CDF</td>
-                                <td class="p-2 text-center" id="bundle-illimitee">Illimitée</td>
-                                <td class="p-2 text-center" id="bundle-debitPremium">525 Kb/s up, 2 Mb/s down</td>
-                            </tr>
-                            <tr class="bg-gray-50 dark:bg-gray-700 hover:bg-purple-100 dark:hover:bg-purple-900">
-                                <td class="p-2 text-center" id="bundle-vip">VIP</td>
-                                <td class="p-2 text-center" id="bundle-journalier">Journalier</td>
-                                <td class="p-2 text-center">2 000 CDF</td>
-                                <td class="p-2 text-center" id="bundle-illimitee">Illimitée</td>
-                                <td class="p-2 text-center" id="bundle-debitVIP">3 Mb/s up, 10 Mb/s down</td>
-                            </tr>
-                            <tr class="hover:bg-purple-100 dark:hover:bg-purple-900">
-                                <td class="p-2 text-center" id="bundle-vip">VIP</td>
-                                <td class="p-2 text-center" id="bundle-troisJours">3 jours</td>
-                                <td class="p-2 text-center">4 000 CDF</td>
-                                <td class="p-2 text-center" id="bundle-illimitee">Illimitée</td>
-                                <td class="p-2 text-center" id="bundle-debitVIP">3 Mb/s up, 10 Mb/s down</td>
-                            </tr>
-                            <tr class="bg-gray-50 dark:bg-gray-700 hover:bg-purple-100 dark:hover:bg-purple-900">
-                                <td class="p-2 text-center" id="bundle-vip">VIP</td>
-                                <td class="p-2 text-center" id="bundle-hebdomadaire">Hebdomadaire</td>
-                                <td class="p-2 text-center">10 000 CDF</td>
-                                <td class="p-2 text-center" id="bundle-illimitee">Illimitée</td>
-                                <td class="p-2 text-center" id="bundle-debitVIP">3 Mb/s up, 10 Mb/s down</td>
-                            </tr>
-                            <tr class="hover:bg-purple-100 dark:hover:bg-purple-900">
-                                <td class="p-2 text-center" id="bundle-vip">VIP</td>
-                                <td class="p-2 text-center" id="bundle-mensuel">Mensuel</td>
-                                <td class="p-2 text-center">35 000 CDF</td>
-                                <td class="p-2 text-center" id="bundle-illimitee">Illimitée</td>
-                                <td class="p-2 text-center" id="bundle-debitVIP">3 Mb/s up, 10 Mb/s down</td>
-                            </tr>
-                            <tr class="bg-gray-50 dark:bg-gray-700 hover:bg-purple-100 dark:hover:bg-purple-900">
-                                <td class="p-2 text-center" id="bundle-turbo">Turbo</td>
-                                <td class="p-2 text-center" id="bundle-journalier">Journalier</td>
-                                <td class="p-2 text-center">5 000 CDF</td>
-                                <td class="p-2 text-center" id="bundle-gb50">50 GB</td>
-                                <td class="p-2 text-center" id="bundle-debitTurbo">10 Mb/s up, 50 Mb/s down</td>
-                            </tr>
-                            <tr class="hover:bg-purple-100 dark:hover:bg-purple-900">
-                                <td class="p-2 text-center" id="bundle-turbo">Turbo</td>
-                                <td class="p-2 text-center" id="bundle-journalier">Journalier</td>
-                                <td class="p-2 text-center">10 000 CDF</td>
-                                <td class="p-2 text-center" id="bundle-gb100">100 GB</td>
-                                <td class="p-2 text-center" id="bundle-debitTurbo">10 Mb/s up, 50 Mb/s down</td>
-                            </tr>
-                            <tr class="bg-gray-50 dark:bg-gray-700 hover:bg-purple-100 dark:hover:bg-purple-900">
-                                <td class="p-2 text-center" id="bundle-turbo">Turbo</td>
-                                <td class="p-2 text-center" id="bundle-troisJours">3 jours</td>
-                                <td class="p-2 text-center">15 000 CDF</td>
-                                <td class="p-2 text-center" id="bundle-gb100">100 GB</td>
-                                <td class="p-2 text-center" id="bundle-debitTurbo">10 Mb/s up, 50 Mb/s down</td>
-                            </tr>
-                            <tr class="hover:bg-purple-100 dark:hover:bg-purple-900">
-                                <td class="p-2 text-center" id="bundle-turbo">Turbo</td>
-                                <td class="p-2 text-center" id="bundle-troisJours">3 jours</td>
-                                <td class="p-2 text-center">30 000 CDF</td>
-                                <td class="p-2 text-center" id="bundle-gb300">300 GB</td>
-                                <td class="p-2 text-center" id="bundle-debitTurbo">10 Mb/s up, 50 Mb/s down</td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-            <h3 id="nearbyResellers" class="text-lg font-semibold">Nearby Resellers</h3>
-            <ul id="resellerList" class="space-y-2 mt-2">
-                <li class="flex items-center text-gray-900 dark:text-gray-100">
-                    <i class="fas fa-user-circle text-2xl reseller-profile-icon mr-2"></i>
-                    <span id="reseller1Name">John Doe</span> - <span id="reseller1Phone">+1234567890</span>, <span id="reseller1Address">123 Main St, Kinshasa</span>
-                </li>
-                <li class="flex items-center text-gray-900 dark:text-gray-100">
-                    <i class="fas fa-user-circle text-2xl reseller-profile-icon mr-2"></i>
-                    <span id="reseller2Name">Jane Smith</span> - <span id="reseller2Phone">+0987654321</span>, <span id="reseller2Address">456 Market Rd, Goma</span>
-                </li>
-            </ul>
-            <h3 id="assignCodeTitle" class="text-lg font-semibold mt-4">Assign Code to User</h3>
-            <div id="assignCodeForm" class="space-y-4 mt-2">
-                <input id="resellerContact" type="text" placeholder="Enter Phone or Email" class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100" required>
-                <select id="resellerContactType" class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100" required>
-                    <option value="phone">Phone</option>
-                    <option value="email">Email</option>
-                </select>
-                <select id="resellerSubscription" class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100" required>
-                    <option value="1">Premium Daily - 1 000 CDF</option>
-                    <option value="2">Premium 3 Days - 2 500 CDF</option>
-                    <option value="3">Premium Weekly - 5 000 CDF</option>
-                    <option value="4">Premium Monthly - 20 000 CDF</option>
-                    <option value="5">VIP Daily - 2 000 CDF</option>
-                    <option value="6">VIP 3 Days - 4 000 CDF</option>
-                    <option value="7">VIP Weekly - 10 000 CDF</option>
-                    <option value="8">VIP Monthly - 35 000 CDF</option>
-                    <option value="9">Turbo Daily - 5 000 CDF (50 GB)</option>
-                    <option value="10">Turbo Daily - 10 000 CDF (100 GB)</option>
-                    <option value="11">Turbo 3 Days - 15 000 CDF (100 GB)</option>
-                    <option value="12">Turbo 3 Days - 30 000 CDF (300 GB)</option>
-                </select>
-                <button id="assignCodeBtn" class="w-full px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 transition">Assign Code</button>
-            </div>
-            <div class="flex space-x-4 mt-4">
-                <button id="backResellerBtn" class="text-gray-600 dark:text-gray-400 hover:underline">Back</button>
-                <button id="closeResellerModal" class="text-gray-600 dark:text-gray-400 hover:underline">Close</button>
-            </div>
-        </div>
-    </div>
+    <details>
+      <summary>Aide et questions fréquentes</summary>
+      <ul>
+        <li><strong>Où acheter un code ?</strong> Chez un revendeur à Kitutu, en espèces (FC).</li>
+        <li><strong>Le code ne passe pas ?</strong> Vérifiez les caractères : il n'y a jamais de <b>0</b>, <b>O</b>, <b>1</b>, <b>I</b> ni <b>l</b>.</li>
+        <li><strong>Le temps commence quand ?</strong> À la première utilisation du code, pas à l'achat.</li>
+        <li><strong>J'ai perdu ma connexion ?</strong> Réentrez le même code : il reprend le temps restant.</li>
+        <li><strong>Données épuisées ?</strong> Le code s'arrête même s'il reste du temps. Un nouveau ticket est nécessaire.</li>
+        <li>Un code ne peut pas servir deux fois en même temps.</li>
+      </ul>
+    </details>
 
-    <!-- Mobile Money Modal -->
-    <div id="mobileMoneyModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden">
-        <div class="bg-gradient-animate p-6 rounded-lg shadow-lg max-w-4xl w-full">
-            <h2 id="mobileMoneyTitle" class="text-2xl font-bold mb-4 text-purple-600 dark:text-purple-400">Buy with Mobile Money</h2>
-            <div id="mobileBundles" class="mb-4">
-                <div class="overflow-y-auto max-h-64 scrollable-table">
-                    <table class="w-full border-collapse text-sm">
-                        <thead>
-                            <tr class="bg-purple-600 text-white sticky top-0">
-                                <th id="forfaitsMobile" class="p-2 rounded-tl-lg flex items-center justify-center">
-                                    <i class="fas fa-star text-sm table-icon mr-1"></i> Forfaits
-                                </th>
-                                <th id="dureeMobile" class="p-2 flex items-center justify-center">
-                                    <i class="fas fa-clock text-sm table-icon mr-1"></i> Durée
-                                </th>
-                                <th id="tarifsMobile" class="p-2 flex items-center justify-center">
-                                    <i class="fas fa-money-bill text-sm table-icon mr-1"></i> Tarifs
-                                </th>
-                                <th id="typeMobile" class="p-2 flex items-center justify-center">
-                                    <i class="fas fa-tags text-sm table-icon mr-1"></i> Type
-                                </th>
-                                <th id="debitMobile" class="p-2 rounded-tr-lg flex items-center justify-center">
-                                    <i class="fas fa-tachometer-alt text-sm table-icon mr-1"></i> Débit
-                                </th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <tr class="bg-gray-50 dark:bg-gray-700 hover:bg-purple-100 dark:hover:bg-purple-900">
-                                <td class="p-2 text-center" id="bundle-premiumMobile">Premium</td>
-                                <td class="p-2 text-center" id="bundle-journalierMobile">Journalier</td>
-                                <td class="p-2 text-center">1 000 CDF</td>
-                                <td class="p-2 text-center" id="bundle-illimiteeMobile">Illimitée</td>
-                                <td class="p-2 text-center" id="bundle-debitPremiumMobile">525 Kb/s up, 2 Mb/s down</td>
-                            </tr>
-                            <tr class="hover:bg-purple-100 dark:hover:bg-purple-900">
-                                <td class="p-2 text-center" id="bundle-premiumMobile">Premium</td>
-                                <td class="p-2 text-center" id="bundle-troisJoursMobile">3 jours</td>
-                                <td class="p-2 text-center">2 500 CDF</td>
-                                <td class="p-2 text-center" id="bundle-illimiteeMobile">Illimitée</td>
-                                <td class="p-2 text-center" id="bundle-debitPremiumMobile">525 Kb/s up, 2 Mb/s down</td>
-                            </tr>
-                            <tr class="bg-gray-50 dark:bg-gray-700 hover:bg-purple-100 dark:hover:bg-purple-900">
-                                <td class="p-2 text-center" id="bundle-premiumMobile">Premium</td>
-                                <td class="p-2 text-center" id="bundle-hebdomadaireMobile">Hebdomadaire</td>
-                                <td class="p-2 text-center">5 000 CDF</td>
-                                <td class="p-2 text-center" id="bundle-illimiteeMobile">Illimitée</td>
-                                <td class="p-2 text-center" id="bundle-debitPremiumMobile">525 Kb/s up, 2 Mb/s down</td>
-                            </tr>
-                            <tr class="hover:bg-purple-100 dark:hover:bg-purple-900">
-                                <td class="p-2 text-center" id="bundle-premiumMobile">Premium</td>
-                                <td class="p-2 text-center" id="bundle-mensuelMobile">Mensuel</td>
-                                <td class="p-2 text-center">20 000 CDF</td>
-                                <td class="p-2 text-center" id="bundle-illimiteeMobile">Illimitée</td>
-                                <td class="p-2 text-center" id="bundle-debitPremiumMobile">525 Kb/s up, 2 Mb/s down</td>
-                            </tr>
-                            <tr class="bg-gray-50 dark:bg-gray-700 hover:bg-purple-100 dark:hover:bg-purple-900">
-                                <td class="p-2 text-center" id="bundle-vipMobile">VIP</td>
-                                <td class="p-2 text-center" id="bundle-journalierMobile">Journalier</td>
-                                <td class="p-2 text-center">2 000 CDF</td>
-                                <td class="p-2 text-center" id="bundle-illimiteeMobile">Illimitée</td>
-                                <td class="p-2 text-center" id="bundle-debitVIPMobile">3 Mb/s up, 10 Mb/s down</td>
-                            </tr>
-                            <tr class="hover:bg-purple-100 dark:hover:bg-purple-900">
-                                <td class="p-2 text-center" id="bundle-vipMobile">VIP</td>
-                                <td class="p-2 text-center" id="bundle-troisJoursMobile">3 jours</td>
-                                <td class="p-2 text-center">4 000 CDF</td>
-                                <td class="p-2 text-center" id="bundle-illimiteeMobile">Illimitée</td>
-                                <td class="p-2 text-center" id="bundle-debitVIPMobile">3 Mb/s up, 10 Mb/s down</td>
-                            </tr>
-                            <tr class="bg-gray-50 dark:bg-gray-700 hover:bg-purple-100 dark:hover:bg-purple-900">
-                                <td class="p-2 text-center" id="bundle-vipMobile">VIP</td>
-                                <td class="p-2 text-center" id="bundle-hebdomadaireMobile">Hebdomadaire</td>
-                                <td class="p-2 text-center">10 000 CDF</td>
-                                <td class="p-2 text-center" id="bundle-illimiteeMobile"></td>
-                                <td class="p-2 text-center" id="bundle-debitVIPMobile">3 Mb/s up, 10 Mb/s down</td>
-                            </tr>
-                            <tr class="hover:bg-purple-100 dark:hover:bg-purple-900">
-                                <td class="p-2 text-center" id="bundle-vipMobile">VIP</td>
-                                <td class="p-2 text-center" id="bundle-mensuelMobile">Mensuel</td>
-                                <td class="p-2 text-center">35 000 CDF</td>
-                                <td class="p-2 text-center" id="bundle-illimiteeMobile">Illimitée</td>
-                                <td class="p-2 text-center" id="bundle-debitVIPMobile">3 Mb/s up, 10 Mb/s down</td>
-                            </tr>
-                            <tr class="bg-gray-50 dark:bg-gray-700 hover:bg-purple-100 dark:hover:bg-purple-900">
-                                <td class="p-2 text-center" id="bundle-turboMobile">Turbo</td>
-                                <td class="p-2 text-center" id="bundle-journalierMobile">Journalier</td>
-                                <td class="p-2 text-center">5 000 CDF</td>
-                                <td class="p-2 text-center" id="bundle-gb50Mobile">50 GB</td>
-                                <td class="p-2 text-center" id="bundle-debitTurboMobile">10 Mb/s up, 50 Mb/s down</td>
-                            </tr>
-                            <tr class="hover:bg-purple-100 dark:hover:bg-purple-900">
-                                <td class="p-2 text-center" id="bundle-turboMobile">Turbo</td>
-                                <td class="p-2 text-center" id="bundle-journalierMobile">Journalier</td>
-                                <td class="p-2 text-center">10 000 CDF</td>
-                                <td class="p-2 text-center" id="bundle-gb100Mobile">100 GB</td>
-                                <td class="p-2 text-center" id="bundle-debitTurboMobile">10 Mb/s up, 50 Mb/s down</td>
-                            </tr>
-                            <tr class="bg-gray-50 dark:bg-gray-700 hover:bg-purple-100 dark:hover:bg-purple-900">
-                                <td class="p-2 text-center" id="bundle-turboMobile">Turbo</td>
-                                <td class="p-2 text-center" id="bundle-troisJoursMobile">3 jours</td>
-                                <td class="p-2 text-center">15 000 CDF</td>
-                                <td class="p-2 text-center" id="bundle-gb100Mobile">100 GB</td>
-                                <td class="p-2 text-center" id="bundle-debitTurboMobile">10 Mb/s up, 50 Mb/s down</td>
-                            </tr>
-                            <tr class="hover:bg-purple-100 dark:hover:bg-purple-900">
-                                <td class="p-2 text-center" id="bundle-turboMobile">Turbo</td>
-                                <td class="p-2 text-center" id="bundle-troisJoursMobile">3 jours</td>
-                                <td class="p-2 text-center">30 000 CDF</td>
-                                <td class="p-2 text-center" id="bundle-gb300Mobile">300 GB</td>
-                                <td class="p-2 text-center" id="bundle-debitTurboMobile">10 Mb/s up, 50 Mb/s down</td>
-                            </tr>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-            <div id="mobileMoneyForm" class="space-y-4">
-                <input type="text" id="contactInput" placeholder="Enter Phone or Email" class="w-full px-4 py-1 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 dark:text-gray-100 text-gray-900" required>
-                <select id="contactType" class="w-full px-4 py-1 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100" required>
-                    <option value="phone">Phone</option>
-                    <option value="email">Email</option>
-                </select>
-                <button id="payBtn" class="w-full px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 transition">Pay</button>
-            </div>
-            <div class="flex space-x-4 mt-4">
-                <button id="backMobileMoneyBtn" class="text-gray-600 dark:text-gray-400 hover:underline">Back</button>
-                <button id="closeMobileMoneyModal" class="text-gray-600 dark:text-gray-400 hover:underline">Close</button>
-            </div>
-        </div>
-    </div>
+    <p class="note">Page allégée : elle fonctionne même avec une connexion très lente.</p>
+  </main>
 
-    <!-- Subscription Type Modal -->
-    <div id="subscriptionTypeModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden">
-        <div class="bg-gradient-animate p-6 rounded-lg shadow-lg max-w-lg w-full">
-            <h2 id="selectSubscription" class="text-2xl font-bold mb-4 text-purple-600 dark:text-purple-400">Select Subscription Type</h2>
-            <ul class="space-y-2 max-h-64 overflow-y-auto scrollable-table">
-                <li class="p-2 bg-gray-50 dark:bg-gray-700 hover:bg-purple-100 dark:hover:bg-purple-900 cursor-pointer" data-subscription="1">
-                    <span id="bundle-premium">Premium</span> <span id="bundle-journalier">Journalier</span> - 1 000 CDF
-                </li>
-                <li class="p-2 hover:bg-purple-100 dark:hover:bg-purple-900 cursor-pointer" data-subscription="2">
-                    <span id="bundle-premium">Premium</span> <span id="bundle-troisJours">3 jours</span> - 2 500 CDF
-                </li>
-                <li class="p-2 bg-gray-50 dark:bg-gray-700 hover:bg-purple-100 dark:hover:bg-purple-900 cursor-pointer" data-subscription="3">
-                    <span id="bundle-premium">Premium</span> <span id="bundle-hebdomadaire">Hebdomadaire</span> - 5 000 CDF
-                </li>
-                <li class="p-2 hover:bg-purple-100 dark:hover:bg-purple-900 cursor-pointer" data-subscription="4">
-                    <span id="bundle-premium">Premium</span> <span id="bundle-mensuel">Mensuel</span> - 20 000 CDF
-                </li>
-                <li class="p-2 bg-gray-50 dark:bg-gray-700 hover:bg-purple-100 dark:hover:bg-purple-900 cursor-pointer" data-subscription="5">
-                    <span id="bundle-vip">VIP</span> <span id="bundle-journalier">Journalier</span> - 2 000 CDF
-                </li>
-                <li class="p-2 hover:bg-purple-100 dark:hover:bg-purple-900 cursor-pointer" data-subscription="6">
-                    <span id="bundle-vip">VIP</span> <span id="bundle-troisJours">3 jours</span> - 4 000 CDF
-                </li>
-                <li class="p-2 bg-gray-50 dark:bg-gray-700 hover:bg-purple-100 dark:hover:bg-purple-900 cursor-pointer" data-subscription="7">
-                    <span id="bundle-vip">VIP</span> <span id="bundle-hebdomadaire">Hebdomadaire</span> - 10 000 CDF
-                </li>
-                <li class="p-2 hover:bg-purple-100 dark:hover:bg-purple-900 cursor-pointer" data-subscription="8">
-                    <span id="bundle-vip">VIP</span> <span id="bundle-mensuel">Mensuel</span> - 35 000 CDF
-                </li>
-                <li class="p-2 bg-gray-50 dark:bg-gray-700 hover:bg-purple-100 dark:hover:bg-purple-900 cursor-pointer" data-subscription="9">
-                    <span id="bundle-turbo">Turbo</span> <span id="bundle-journalier">Journalier</span> - 5 000 CDF (50 GB)
-                </li>
-                <li class="p-2 hover:bg-purple-100 dark:hover:bg-purple-900 cursor-pointer" data-subscription="10">
-                    <span id="bundle-turbo">Turbo</span> <span id="bundle-journalier">Journalier</span> - 10 000 CDF (100 GB)
-                </li>
-                <li class="p-2 bg-gray-50 dark:bg-gray-700 hover:bg-purple-100 dark:hover:bg-purple-900 cursor-pointer" data-subscription="11">
-                    <span id="bundle-turbo">Turbo</span> <span id="bundle-troisJours">3 jours</span> - 15 000 CDF (100 GB)
-                </li>
-                <li class="p-2 hover:bg-purple-100 dark:hover:bg-purple-900 cursor-pointer" data-subscription="12">
-                    <span id="bundle-turbo">Turbo</span> <span id="bundle-troisJours">3 jours</span> - 30 000 CDF (300 GB)
-                </li>
-            </ul>
-            <div class="flex space-x-4 mt-4">
-                <button id="confirmSubscriptionBtn" class="px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 transition">Confirm</button>
-                <button id="closeSubscriptionTypeModal" class="text-gray-600 dark:text-gray-400 hover:underline">Close</button>
-            </div>
-        </div>
-    </div>
+  <footer>
+    <?php echo html($portalName); ?> · <a href="reseller.php">Espace revendeur</a>
+  </footer>
+</div>
 
-    <!-- Payment Loading Modal -->
-    <div id="paymentLoadingModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden">
-        <div class="bg-gradient-animate p-6 rounded-lg shadow-lg max-w-lg w-full flex items-center justify-center">
-            <div class="flex flex-col items-center">
-                <i class="fas fa-spinner fa-spin text-4xl text-purple-600 dark:text-purple-400"></i>
-                <p id="processingText" class="mt-4 text-gray-900 dark:text-gray-100">Processing Payment...</p>
-            </div>
-        </div>
-    </div>
+<script>
+(function () {
+  var form = document.getElementById('codeForm');
+  var input = document.getElementById('code');
+  var btn = document.getElementById('submitBtn');
+  var box = document.getElementById('message');
+  var csrf = document.querySelector('meta[name="csrf-token"]').content;
+  var timer = null;
 
-    <!-- Footer -->
-    <footer class="w-full p-4 bg-white dark:bg-gray-800 text-center space-x-4">
-        <a href="#" id="termsLink" class="text-purple-600 dark:text-purple-400 hover:underline">Terms of Service</a>
-        <a href="#" id="privacyLink" class="text-purple-600 dark:text-purple-400 hover:underline">Privacy</a>
-        <a href="#" id="legalLink" class="text-purple-600 dark:text-purple-400 hover:underline">Legal</a>
-        <br><br>
-        <div class="bg-gradient-to-r from-purple-100 to-purple-200 dark:from-gray-700 dark:to-gray-800 p-2 rounded-md text-sm font-semibold italic text-purple-600 dark:text-purple-400">
-            <p id="zinboLink" class="copyright-icon">©2025 All rights reserved - Zinbo Technology</p>
-        </div>
-    </footer>
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+    });
+  }
 
-    <!-- Terms Modal -->
-    <div id="termsModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden">
-        <div class="bg-gradient-animate p-6 rounded-lg shadow-lg max-w-lg w-full">
-            <h2 class="text-2xl font-bold mb-4 text-purple-600 dark:text-purple-400">Terms of Service</h2>
-            <p class="text-gray-900 dark:text-gray-100">Placeholder for Terms of Service content.</p>
-            <button id="closeTermsModal" class="mt-4 text-gray-600 dark:text-gray-400 hover:underline">Close</button>
-        </div>
-    </div>
+  function fmtBytes(b) {
+    if (b === null || b === undefined) return 'illimité';
+    var units = ['o','Ko','Mo','Go'], i = 0, v = b;
+    while (v >= 1024 && i < units.length - 1) { v = v / 1024; i++; }
+    return v.toFixed(i === 0 ? 0 : 1).replace('.', ',') + ' ' + units[i];
+  }
 
-    <!-- Privacy Modal -->
-    <div id="privacyModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden">
-        <div class="bg-gradient-animate p-6 rounded-lg shadow-lg max-w-lg w-full">
-            <h2 class="text-2xl font-bold mb-4 text-purple-600 dark:text-purple-400">Privacy Policy</h2>
-            <p class="text-gray-900 dark:text-gray-100">Placeholder for Privacy Policy content.</p>
-            <button id="closePrivacyModal" class="mt-4 text-gray-600 dark:text-gray-400 hover:underline">Close</button>
-        </div>
-    </div>
+  function fmtTime(sec) {
+    sec = Math.max(0, Math.floor(sec));
+    var j = Math.floor(sec / 86400);
+    var h = Math.floor((sec % 86400) / 3600);
+    var m = Math.floor((sec % 3600) / 60);
+    var s = sec % 60;
+    if (j > 0) return j + ' j ' + h + ' h';
+    if (h > 0) return h + ' h ' + String(m).padStart(2, '0') + ' min';
+    if (m > 0) return m + ' min ' + String(s).padStart(2, '0') + ' s';
+    return s + ' s';
+  }
 
-    <!-- Legal Modal -->
-    <div id="legalModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden">
-        <div class="bg-gradient-animate p-6 rounded-lg shadow-lg max-w-lg w-full">
-            <h2 class="text-2xl font-bold mb-4 text-purple-600 dark:text-purple-400">Legal Information</h2>
-            <p class="text-gray-900 dark:text-gray-100">Placeholder for Legal content.</p>
-            <button id="closeLegalModal" class="mt-4 text-gray-600 dark:text-gray-400 hover:underline">Close</button>
-        </div>
-    </div>
+  var messages = {
+    invalid: ['Code invalide', "Ce code n'existe pas. Vérifiez les caractères : il n'y a jamais de 0, O, 1, I ou l."],
+    expired: ['Code expiré', 'Le temps de ce ticket est terminé.'],
+    revoked: ['Code désactivé', 'Ce code a été révoqué. Contactez votre revendeur.'],
+    used: ['Déjà utilisé', 'Ce code a déjà été utilisé : son plafond de données est atteint.'],
+    rateLimited: ['Trop d\'essais', 'Attendez quelques minutes avant de réessayer.'],
+    csrfInvalid: ['Session expirée', 'Rechargez la page et réessayez.'],
+    empty: ['Code vide', 'Entrez le code inscrit sur votre ticket.']
+  };
 
-    <script>
-        // Language translations
-        const translations = {
-            en: {
-                welcome: "Welcome to ZinbConnect! Enter your access code to connect.",
-                reseller: "Reseller",
-                connect: "Connect",
-                accessCodePlaceholder: "Enter Access Code",
-                buySubscription: "Buy a Subscription",
-                subscriptionTitle: "Choose Subscription Option",
-                buyReseller: "Buy from a Reseller",
-                buyMobileMoney: "Buy with Mobile Money",
-                resellerTitle: "Reseller / Admin Panel",
-                mobileMoneyTitle: "Buy with Mobile Money",
-                pay: "Pay",
-                processing: "Processing Payment...",
-                terms: "Terms of Service",
-                privacy: "Privacy",
-                legal: "Legal",
-                invalidCode: "Invalid or expired access code. Please enter a new one.",
-                connected: "Connected successfully!",
-                nearbyResellers: "Nearby Resellers",
-                reseller1Name: "John Doe",
-                reseller1Phone: "+1234567890",
-                reseller1Address: "123 Main St, Kinshasa",
-                reseller2Name: "Jane Smith",
-                reseller2Phone: "+0987654321",
-                reseller2Address: "456 Market Rd, Goma",
-                forfaits: "Packages",
-                duree: "Duration",
-                tarifs: "Rates",
-                type: "Type",
-                debit: "Bandwidth",
-                premium: "Premium",
-                vip: "VIP",
-                turbo: "Turbo",
-                journalier: "Daily",
-                troisJours: "3 Days",
-                hebdomadaire: "Weekly",
-                mensuel: "Monthly",
-                illimitee: "Unlimited",
-                gb50: "50 GB",
-                gb100: "100 GB",
-                gb300: "300 GB",
-                debitPremium: "525 Kb/s up, 2 Mb/s down",
-                debitVIP: "3 Mb/s up, 10 Mb/s down",
-                debitTurbo: "10 Mb/s up, 50 Mb/s down",
-                back: "Back",
-                selectSubscription: "Select Subscription Type",
-                confirm: "Confirm",
-                zinbo: "©2025 All rights reserved - Zinbo Technology",
-                contactPlaceholder: "Enter Phone or Email",
-                purchaseSuccess: "Purchase successful! Your access code is: ",
-                purchaseFailed: "Purchase failed. Please try again.",
-                assignCodeTitle: "Assign Code to User",
-                assignCode: "Assign Code",
-                assignSuccess: "Code assigned successfully: ",
-                assignFailed: "Failed to assign code: ",
-                connectionSuccessTitle: "Success!",
-                connectionSuccessMessage: "You are now connected to the internet.",
-                connectionFailedTitle: "Error",
-                connectionFailedMessage: "Invalid or expired access code.",
-                disconnect: "Disconnect"
-            },
-            fr: {
-                welcome: "Bienvenue sur ZinbConnect ! Entrez votre code d'accès pour vous connecter.",
-                reseller: "Revendeur",
-                connect: "Connexion",
-                accessCodePlaceholder: "Entrez le code d'accès",
-                buySubscription: "Acheter un abonnement",
-                subscriptionTitle: "Choisir une option d'abonnement",
-                buyReseller: "Acheter auprès d'un revendeur",
-                buyMobileMoney: "Acheter avec Mobile Money",
-                resellerTitle: "Panel Revendeur / Admin",
-                mobileMoneyTitle: "Acheter avec Mobile Money",
-                pay: "Payer",
-                processing: "Traitement du paiement...",
-                terms: "Conditions de service",
-                privacy: "Confidentialité",
-                legal: "Mentions légales",
-                invalidCode: "Code d'accès invalide ou expiré. Veuillez en entrer un nouveau.",
-                connected: "Connexion réussie !",
-                nearbyResellers: "Revendeurs à proximité",
-                reseller1Name: "Jean Dupont",
-                reseller1Phone: "+1234567890",
-                reseller1Address: "123 Rue Principale, Kinshasa",
-                reseller2Name: "Marie Dubois",
-                reseller2Phone: "+0987654321",
-                reseller2Address: "456 Route du Marché, Goma",
-                forfaits: "Forfaits",
-                duree: "Durée",
-                tarifs: "Tarifs",
-                type: "Type",
-                debit: "Débit",
-                premium: "Premium",
-                vip: "VIP",
-                turbo: "Turbo",
-                journalier: "Journalier",
-                troisJours: "3 jours",
-                hebdomadaire: "Hebdomadaire",
-                mensuel: "Mensuel",
-                illimitee: "Illimitée",
-                gb50: "50 Go",
-                gb100: "100 Go",
-                gb300: "300 Go",
-                debitPremium: "525 Kb/s montant, 2 Mb/s descendant",
-                debitVIP: "3 Mb/s montant, 10 Mb/s descendant",
-                debitTurbo: "10 Mb/s montant, 50 Mb/s descendant",
-                back: "Retour",
-                selectSubscription: "Sélectionner le type d'abonnement",
-                confirm: "Confirmer",
-                zinbo: "©2025 Tous droits réservés - Zinbo Technology",
-                contactPlaceholder: "Entrez le téléphone ou l'email",
-                purchaseSuccess: "Achat réussi ! Votre code d'accès est : ",
-                purchaseFailed: "Échec de l'achat. Veuillez réessayer.",
-                assignCodeTitle: "Attribuer un code à l'utilisateur",
-                assignCode: "Attribuer un code",
-                assignSuccess: "Code attribué avec succès : ",
-                assignFailed: "Échec de l'attribution du code : ",
-                connectionSuccessTitle: "Succès !",
-                connectionSuccessMessage: "Vous êtes maintenant connecté à Internet.",
-                connectionFailedTitle: "Erreur",
-                connectionFailedMessage: "Code d'accès invalide ou expiré.",
-                disconnect: "Déconnexion"
-            },
-            sw: {
-                welcome: "Karibu ZinbConnect! Ingiza nambari yako ya upatikanaji kuunganisha.",
-                reseller: "Muuzaji",
-                connect: "Unganisha",
-                accessCodePlaceholder: "Ingiza Nambari ya Upatikanaji",
-                buySubscription: "Nunua Usajili",
-                subscriptionTitle: "Chagua Chaguo la Usajili",
-                buyReseller: "Nunua kutoka kwa Muuzaji",
-                buyMobileMoney: "Nunua na Pesa za Simu",
-                resellerTitle: "Jopo la Muuzaji / Admin",
-                mobileMoneyTitle: "Nunua na Pesa za Simu",
-                pay: "Lipa",
-                processing: "Inachakata Malipo...",
-                terms: "Masharti ya Huduma",
-                privacy: "Faragha",
-                legal: "Taarifa za Kisheria",
-                invalidCode: "Nambari ya upatikanaji sio sahihi au imekwisha muda. Tafadhali ingiza nyingine.",
-                connected: "Umeunganishwa kwa mafanikio!",
-                nearbyResellers: "Wauzaji wa Karibu",
-                reseller1Name: "John Doe",
-                reseller1Phone: "+1234567890",
-                reseller1Address: "123 Mtaa wa Mkuu, Kinshasa",
-                reseller2Name: "Jane Smith",
-                reseller2Phone: "+0987654321",
-                reseller2Address: "456 Barabara ya Soko, Goma",
-                forfaits: "Vifurushi",
-                duree: "Muda",
-                tarifs: "Viira",
-                type: "Aina",
-                debit: "Kasi",
-                premium: "Premium",
-                vip: "VIP",
-                turbo: "Turbo",
-                journalier: "Siku moja",
-                troisJours: "Siku 3",
-                hebdomadaire: "Wiki moja",
-                mensuel: "Mwezi moja",
-                illimitee: "Bila Mipaka",
-                gb50: "50 GB",
-                gb100: "100 GB",
-                gb300: "300 GB",
-                debitPremium: "525 Kb/s juu, 2 Mb/s chini",
-                debitVIP: "3 Mb/s juu, 10 Mb/s chini",
-                debitTurbo: "10 Mb/s juu, 50 Mb/s chini",
-                back: "Rudi",
-                selectSubscription: "Chagua Aina ya Usajili",
-                confirm: "Thibitisha",
-                zinbo: "©2025 Haki zote zimehifadhiwa - Zinbo Technology",
-                contactPlaceholder: "Ingiza Simu au Barua Pepe",
-                purchaseSuccess: "Ununuzi umefanikiwa! Nambari yako ya upatikanaji ni: ",
-                purchaseFailed: "Ununuzi umeshindwa. Tafadhali jaribu tena.",
-                assignCodeTitle: "Mpe Mtumiaji Nambari",
-                assignCode: "Mpe Nambari",
-                assignSuccess: "Nambari imetolewa kwa mafanikio: ",
-                assignFailed: "Imeshindwa kutoa nambari: ",
-                connectionSuccessTitle: "Mafanikio!",
-                connectionSuccessMessage: "Sasa umeunganishwa kwenye mtandao.",
-                connectionFailedTitle: "Hitilafu",
-                connectionFailedMessage: "Nambari ya upatikanaji sio sahihi au imekwisha muda.",
-                disconnect: "Tenganisha",
-                used: "Nambari hii imetumika tayari.",
-                expired: "Nambari imekwisha muda.",
-                rateLimited: "Majaribio mengi mno. Subiri dakika 5.",
-                purchaseDisabled: "Ununuzi mtandaoni umekwisha awamu: nunua namba kwa muuzaji."
-            }
-        };
+  function showError(reason) {
+    var m = messages[reason] || ['Erreur', "La vérification a échoué. Réessayez dans un instant."];
+    box.className = 'msg ko show';
+    box.innerHTML = '<b>' + esc(m[0]) + '</b>' + esc(m[1]);
+  }
 
-        // Initialize language
-        let currentLang = 'en';
-        const languageSelect = document.getElementById('languageSelect');
-        languageSelect.addEventListener('change', (e) => {
-            currentLang = e.target.value;
-            updateLanguage();
-        });
+  function showSuccess(d) {
+    box.className = 'msg ok show';
+    var remaining = d.remaining_seconds || 0;
+    box.innerHTML =
+      '<b>Code valide — bonne connexion !</b>' +
+      '<div>Forfait : ' + esc(d.plan || '') + '</div>' +
+      '<div class="rows">' +
+        '<div class="row"><span>Temps restant</span><strong class="big" id="left">' + fmtTime(remaining) + '</strong></div>' +
+        '<div class="row"><span>Données restantes</span><strong id="data">' + fmtBytes(d.remaining_bytes) + '</strong></div>' +
+      '</div>' +
+      '<div class="hint">Expire le ' + esc(d.expires_at_fr || '') + '. Réentrez ce code pour revoir le temps restant.</div>';
+    startCountdown(remaining);
+  }
 
-        function updateLanguage() {
-            document.getElementById('welcomeText').textContent = translations[currentLang].welcome;
-            document.getElementById('resellerText').textContent = translations[currentLang].reseller;
-            document.getElementById('connectBtn').textContent = translations[currentLang].connect;
-            document.getElementById('accessCode').placeholder = translations[currentLang].accessCodePlaceholder;
-            document.getElementById('buySubscriptionBtn').textContent = translations[currentLang].buySubscription;
-            document.getElementById('subscriptionTitle').textContent = translations[currentLang].subscriptionTitle;
-            document.getElementById('buyResellerBtn').querySelector('span').textContent = translations[currentLang].buyReseller;
-            document.getElementById('buyMobileMoneyBtn').querySelector('span').textContent = translations[currentLang].buyMobileMoney;
-            document.getElementById('resellerTitle').textContent = translations[currentLang].resellerTitle;
-            document.getElementById('mobileMoneyTitle').textContent = translations[currentLang].mobileMoneyTitle;
-            document.getElementById('payBtn').textContent = translations[currentLang].pay;
-            document.getElementById('processingText').textContent = translations[currentLang].processing;
-            document.getElementById('termsLink').textContent = translations[currentLang].terms;
-            document.getElementById('privacyLink').textContent = translations[currentLang].privacy;
-            document.getElementById('zinboLink').textContent = translations[currentLang].zinbo;
-            document.getElementById('legalLink').textContent = translations[currentLang].legal;
-            document.getElementById('nearbyResellers').textContent = translations[currentLang].nearbyResellers;
-            document.getElementById('reseller1Name').textContent = translations[currentLang].reseller1Name;
-            document.getElementById('reseller1Phone').textContent = translations[currentLang].reseller1Phone;
-            document.getElementById('reseller1Address').textContent = translations[currentLang].reseller1Address;
-            document.getElementById('reseller2Name').textContent = translations[currentLang].reseller2Name;
-            document.getElementById('reseller2Phone').textContent = translations[currentLang].reseller2Phone;
-            document.getElementById('reseller2Address').textContent = translations[currentLang].reseller2Address;
-            document.getElementById('forfaits').textContent = translations[currentLang].forfaits;
-            document.getElementById('duree').textContent = translations[currentLang].duree;
-            document.getElementById('tarifs').textContent = translations[currentLang].tarifs;
-            document.getElementById('type').textContent = translations[currentLang].type;
-            document.getElementById('debit').textContent = translations[currentLang].debit;
-            document.getElementById('forfaitsMobile').textContent = translations[currentLang].forfaits;
-            document.getElementById('dureeMobile').textContent = translations[currentLang].duree;
-            document.getElementById('tarifsMobile').textContent = translations[currentLang].tarifs;
-            document.getElementById('typeMobile').textContent = translations[currentLang].type;
-            document.getElementById('debitMobile').textContent = translations[currentLang].debit;
-            document.getElementById('selectSubscription').textContent = translations[currentLang].selectSubscription;
-            document.getElementById('confirmSubscriptionBtn').textContent = translations[currentLang].confirm;
-            document.getElementById('backResellerBtn').textContent = translations[currentLang].back;
-            document.getElementById('backMobileMoneyBtn').textContent = translations[currentLang].back;
-            document.getElementById('contactInput').placeholder = translations[currentLang].contactPlaceholder;
-            document.getElementById('resellerContact').placeholder = translations[currentLang].contactPlaceholder;
-            document.getElementById('assignCodeTitle').textContent = translations[currentLang].assignCodeTitle;
-            document.getElementById('assignCodeBtn').textContent = translations[currentLang].assignCode;
+  function startCountdown(sec) {
+    if (timer) clearInterval(timer);
+    var el = document.getElementById('left');
+    if (!el) return;
+    timer = setInterval(function () {
+      sec--;
+      if (sec <= 0) {
+        clearInterval(timer);
+        el.textContent = 'terminé';
+        return;
+      }
+      el.textContent = fmtTime(sec);
+    }, 1000);
+  }
 
-            const bundleIds = [
-                'bundle-premium', 'bundle-vip', 'bundle-turbo',
-                'bundle-journalier', 'bundle-troisJours', 'bundle-hebdomadaire', 'bundle-mensuel',
-                'bundle-illimitee', 'bundle-gb50', 'bundle-gb100', 'bundle-gb300',
-                'bundle-debitPremium', 'bundle-debitVIP', 'bundle-debitTurbo',
-                'bundle-premiumMobile', 'bundle-vipMobile', 'bundle-turboMobile',
-                'bundle-journalierMobile', 'bundle-troisJoursMobile', 'bundle-hebdomadaireMobile', 'bundle-mensuelMobile',
-                'bundle-illimiteeMobile', 'bundle-gb50Mobile', 'bundle-gb100Mobile', 'bundle-gb300Mobile',
-                'bundle-debitPremiumMobile', 'bundle-debitVIPMobile', 'bundle-debitTurboMobile'
-            ];
-            bundleIds.forEach(id => {
-                const elements = document.querySelectorAll(`#${id}`);
-                elements.forEach(element => {
-                    if (translations[currentLang][id.replace('bundle-', '').replace('Mobile', '').toLowerCase()]) {
-                        element.textContent = translations[currentLang][id.replace('bundle-', '').replace('Mobile', '').toLowerCase()];
-                    }
-                });
-            });
-        }
+  async function check(code) {
+    var res = await fetch('validate_code.php', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-CSRF-Token': csrf},
+      body: JSON.stringify({code: code, csrf: csrf})
+    });
+    return res.json();
+  }
 
-        // Modal controls
-        const subscriptionModal = document.getElementById('subscriptionModal');
-        const resellerModal = document.getElementById('resellerModal');
-        const mobileMoneyModal = document.getElementById('mobileMoneyModal');
-        const subscriptionTypeModal = document.getElementById('subscriptionTypeModal');
-        const paymentLoadingModal = document.getElementById('paymentLoadingModal');
-        const connectionModal = document.getElementById('connectionModal');
-        const termsModal = document.getElementById('termsModal');
-        const privacyModal = document.getElementById('privacyModal');
-        const legalModal = document.getElementById('legalModal');
-        const notification = document.getElementById('notification');
-        const disconnectBtn = document.getElementById('disconnectBtn');
+  form.addEventListener('submit', async function (e) {
+    e.preventDefault();
+    var code = input.value.toUpperCase().replace(/[\s\-_]/g, '');
+    if (!code) { showError('empty'); return; }
+    btn.disabled = true;
+    btn.textContent = 'Vérification…';
+    box.className = 'msg';
+    try {
+      var d = await check(code);
+      if (d.valid) {
+        showSuccess(d);
+      } else {
+        showError(d.reason || 'invalid');
+      }
+    } catch (err) {
+      box.className = 'msg ko show';
+      box.innerHTML = '<b>Connexion impossible</b>Vérifiez que le Wi-Fi est bien connecté, puis réessayez.';
+    }
+    btn.disabled = false;
+    btn.textContent = 'Se connecter';
+  });
 
-        const CSRF = document.querySelector('meta[name="csrf-token"]').content;
-
-        function jsonHeaders() {
-            return { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF };
-        }
-
-        // Message d'erreur clair selon la raison renvoyée par le serveur
-        function failureMessage(data) {
-            const t = translations[currentLang];
-            if (data.reason === 'rateLimited') return t.rateLimited;
-            if (data.reason === 'used') return t.used;
-            if (data.reason === 'expired') return t.expired;
-            return t.connectionFailedMessage;
-        }
-
-        function showNotification(message, isError) {
-            notification.textContent = message;
-            notification.classList.remove('hidden', isError ? 'text-green-500' : 'text-red-500');
-            notification.classList.add(isError ? 'text-red-500' : 'text-green-500');
-        }
-
-        // Auto-connect on page load
-        function autoConnect() {
-            const code = getCookie('access_code');
-            const expirationDate = getCookie('expiration_date');
-            if (code && expirationDate && new Date(expirationDate) > new Date()) {
-                fetch('', {
-                    method: 'POST',
-                    headers: jsonHeaders(),
-                    body: JSON.stringify({ action: 'validate_code', code })
-                })
-                .then(response => response.json())
-                .then(data => {
-                    if (data.valid) {
-                        showConnectionModal(true);
-                        disconnectBtn.classList.remove('hidden');
-                        document.getElementById('connectFormContainer').innerHTML = `<p class="text-green-500 text-center">${translations[currentLang].connected}</p>`;
-                    } else {
-                        clearCookies();
-                    }
-                })
-                .catch(() => clearCookies());
-            }
-        }
-
-        function getCookie(name) {
-            const value = `; ${document.cookie}`;
-            const parts = value.split(`; ${name}=`);
-            if (parts.length === 2) return parts.pop().split(';').shift();
-            return null;
-        }
-
-        function clearCookies() {
-            document.cookie = 'access_code=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/';
-            document.cookie = 'expiration_date=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/';
-            disconnectBtn.classList.add('hidden');
-            document.getElementById('connectFormContainer').innerHTML = `
-                <input id="accessCode" type="text" placeholder="${translations[currentLang].accessCodePlaceholder}" class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100" required>
-                <button id="connectBtn" class="w-full px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 transition">${translations[currentLang].connect}</button>
-            `;
-            bindConnectButton();
-        }
-
-        function showConnectionModal(success) {
-            const icon = document.getElementById('connectionIcon');
-            const title = document.getElementById('connectionTitle');
-            const message = document.getElementById('connectionMessage');
-            if (success) {
-                icon.innerHTML = '<i class="fas fa-check-circle text-green-500"></i>';
-                title.textContent = translations[currentLang].connectionSuccessTitle;
-                message.textContent = translations[currentLang].connectionSuccessMessage;
-                connectionModal.classList.remove('hidden');
-                setTimeout(() => {
-                    // Placeholder for router redirection
-                    window.location.href = 'https://www.google.com'; // Replace with router API call
-                }, 2000);
-            } else {
-                icon.innerHTML = '<i class="fas fa-times-circle text-red-500"></i>';
-                title.textContent = translations[currentLang].connectionFailedTitle;
-                message.textContent = translations[currentLang].connectionFailedMessage;
-                connectionModal.classList.remove('hidden');
-            }
-        }
-
-        function bindConnectButton() {
-            document.getElementById('connectBtn').addEventListener('click', () => {
-                const code = document.getElementById('accessCode').value.trim();
-                if (code) {
-                    fetch('', {
-                        method: 'POST',
-                        headers: jsonHeaders(),
-                        body: JSON.stringify({ action: 'validate_code', code })
-                    })
-                    .then(response => response.json())
-                    .then(data => {
-                        if (data.valid) {
-                            showConnectionModal(true);
-                            disconnectBtn.classList.remove('hidden');
-                            document.getElementById('connectFormContainer').innerHTML = `<p class="text-green-500 text-center">${translations[currentLang].connected}</p>`;
-                        } else {
-                            showNotification(failureMessage(data), true);
-                        }
-                    })
-                    .catch(() => showNotification(translations[currentLang].connectionFailedMessage, true));
-                } else {
-                    showNotification(translations[currentLang].invalidCode, true);
-                }
-            });
-        }
-
-        document.getElementById('buySubscriptionBtn').addEventListener('click', () => {
-            subscriptionModal.classList.remove('hidden');
-        });
-
-        document.getElementById('buyResellerBtn').addEventListener('click', () => {
-            subscriptionModal.classList.add('hidden');
-            resellerModal.classList.remove('hidden');
-        });
-
-        document.getElementById('buyMobileMoneyBtn').addEventListener('click', () => {
-            subscriptionModal.classList.add('hidden');
-            mobileMoneyModal.classList.remove('hidden');
-        });
-
-        document.getElementById('payBtn').addEventListener('click', () => {
-            mobileMoneyModal.classList.add('hidden');
-            subscriptionTypeModal.classList.remove('hidden');
-        });
-
-        document.getElementById('confirmSubscriptionBtn').addEventListener('click', () => {
-            const selectedSubscription = document.querySelector('#subscriptionTypeModal li.bg-purple-100, #subscriptionTypeModal li.bg-purple-900');
-            if (selectedSubscription) {
-                const subscriptionId = selectedSubscription.getAttribute('data-subscription');
-                const contact = document.getElementById('contactInput').value;
-                const contactType = document.getElementById('contactType').value;
-                
-                subscriptionTypeModal.classList.add('hidden');
-                paymentLoadingModal.classList.remove('hidden');
-                
-                fetch('', {
-                    method: 'POST',
-                    headers: jsonHeaders(),
-                    body: JSON.stringify({ action: 'purchase_subscription', subscription_id: subscriptionId, contact, contact_type })
-})
-.then(response => response.json())
-.then(data => {
-paymentLoadingModal.classList.add('hidden');
-// Achat en ligne désactivé (sécurité, phase 2) : la vente se fait par un revendeur.
-showNotification(translations[currentLang].purchaseDisabled, true);
-})
-.catch(() => {
-paymentLoadingModal.classList.add('hidden');
-showNotification(translations[currentLang].purchaseDisabled, true);
-});
-}
-});
-
-document.getElementById('resellerBtn').addEventListener('click', () => {
-resellerModal.classList.remove('hidden');
-});
-
-document.getElementById('backResellerBtn').addEventListener('click', () => {
-resellerModal.classList.add('hidden');
-subscriptionModal.classList.remove('hidden');
-});
-
-document.getElementById('backMobileMoneyBtn').addEventListener('click', () => {
-mobileMoneyModal.classList.add('hidden');
-subscriptionModal.classList.remove('hidden');
-});
-
-document.getElementById('closeSubscriptionModal').addEventListener('click', () => {
-subscriptionModal.classList.add('hidden');
-});
-
-document.getElementById('closeResellerModal').addEventListener('click', () => {
-resellerModal.classList.add('hidden');
-});
-
-document.getElementById('closeMobileMoneyModal').addEventListener('click', () => {
-mobileMoneyModal.classList.add('hidden');
-});
-
-document.getElementById('closeSubscriptionTypeModal').addEventListener('click', () => {
-subscriptionTypeModal.classList.add('hidden');
-});
-
-document.getElementById('closeConnectionModal').addEventListener('click', () => {
-connectionModal.classList.add('hidden');
-});
-
-document.getElementById('termsLink').addEventListener('click', (e) => {
-e.preventDefault();
-termsModal.classList.remove('hidden');
-});
-
-document.getElementById('zinboLink').addEventListener('click', (e) => {
-e.preventDefault();
-termsModal.classList.remove('hidden');
-});
-
-document.getElementById('privacyLink').addEventListener('click', (e) => {
-e.preventDefault();
-privacyModal.classList.remove('hidden');
-});
-
-document.getElementById('legalLink').addEventListener('click', (e) => {
-e.preventDefault();
-legalModal.classList.remove('hidden');
-});
-
-document.getElementById('closeTermsModal').addEventListener('click', () => {
-termsModal.classList.add('hidden');
-});
-
-document.getElementById('closePrivacyModal').addEventListener('click', () => {
-privacyModal.classList.add('hidden');
-});
-
-document.getElementById('closeLegalModal').addEventListener('click', () => {
-legalModal.classList.add('hidden');
-});
-
-document.getElementById('assignCodeBtn').addEventListener('click', () => {
-const subscriptionId = document.getElementById('resellerSubscription').value;
-const contact = document.getElementById('resellerContact').value;
-const contactType = document.getElementById('resellerContactType').value;
-
-fetch('', {
-method: 'POST',
-headers: jsonHeaders(),
-body: JSON.stringify({ action: 'assign_code', subscription_id: subscriptionId, contact, contact_type: contactType })
-})
-.then(response => response.json())
-.then(data => {
-showNotification(translations[currentLang].purchaseDisabled, true);
-})
-.catch(() => {
-showNotification(translations[currentLang].purchaseDisabled, true);
-});
-});
-
-document.getElementById('disconnectBtn').addEventListener('click', () => {
-clearCookies();
-notification.textContent = translations[currentLang].disconnect;
-notification.classList.remove('hidden', 'text-red-500');
-notification.classList.add('text-green-500');
-// Placeholder for router disconnect (e.g., API call to revoke access)
-});
-
-// Highlight selected subscription
-document.querySelectorAll('#subscriptionTypeModal li').forEach(item => {
-item.addEventListener('click', () => {
-document.querySelectorAll('#subscriptionTypeModal li').forEach(li => {
-li.classList.remove('bg-purple-100', 'dark:bg-purple-900');
-});
-item.classList.add('bg-purple-100', 'dark:bg-purple-900');
-});
-});
-
-// Initialize
-updateLanguage();
-bindConnectButton();
-autoConnect();
+  // Affiche directement le champ pour les QR codes : index.php?c=CODE
+  var params = new URLSearchParams(location.search);
+  var pre = params.get('c');
+  if (pre) {
+    input.value = pre.toUpperCase();
+    form.dispatchEvent(new Event('submit'));
+  }
+})();
 </script>
 </body>
 </html>

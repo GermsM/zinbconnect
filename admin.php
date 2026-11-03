@@ -1,1160 +1,983 @@
 <?php
 /**
- * Zinbconnect — Console administrateur (Phase 2 : sécurisé)
- * - Session obligatoire + re-vérification de l'admin en base (PDO préparé)
- * - Jeton CSRF exigé sur toutes les actions POST
- * - Codes générés avec random_bytes, sans caractères ambigus (0/O, 1/I/l exclus),
- *   12 caractères = 60 bits d'entropie ; consommation/insertion atomique
- * - Anciennes dépendances supprimées : PHPMailer/Twilio n'existaient pas dans le
- *   dépôt et bloquaient complètement cette page. Les envois d'e-mail/SMS seront
- *   réintroduits proprement (configurés par .env) en phase 3.
+ * Zinbconnect — console d'administration (français, mobile-first).
+ *
+ * Une seule page, sans dépendance externe (aucun CDN) :
+ *   - tableau de bord : ventes jour/semaine/mois, consommation Starlink ;
+ *   - tickets : génération de lots, PDF avec QR, CSV, recherche, révocation ;
+ *   - ventes par forfait, sessions actives ;
+ *   - réglages : prix, plafonds de données, quota Starlink ;
+ *   - revendeurs, journal d'audit ;
+ *   - sauvegarde et restauration.
+ *
+ * Toutes les actions passent par du JSON protégé par CSRF ; la session admin
+ * est la seule preuve d'accès (cookie HttpOnly, régénéré à la connexion).
  */
 declare(strict_types=1);
 
-require_once __DIR__ . '/lib/security.php';
+require_once __DIR__ . '/lib/tickets.php';
+require_once __DIR__ . '/lib/backup.php';
+require_once __DIR__ . '/lib/pdf.php';
 
 security_headers();
 session_boot();
 
-if (!isset($_SESSION['admin_id'])) {
+if (empty($_SESSION['admin_id'])) {
     header('Location: reseller.php');
     exit;
 }
-$admin_id = (int)$_SESSION['admin_id'];
-
-// L'admin existe toujours ? (protège contre les sessions périmées)
-// (la table admins n'a pas de colonne "name" : on affiche l'avatar e-mail/téléphone)
-$stmt = db()->prepare("SELECT COALESCE(NULLIF(email, ''), NULLIF(phone, ''), 'Admin') AS name FROM admins WHERE id = ? LIMIT 1");
-$stmt->execute([$admin_id]);
-$admin = $stmt->fetch();
-if (!$admin) {
-    audit('admin_stale_session', 'admin:' . $admin_id, 'Compte disparu : déconnexion.');
-    logout_current();
-    header('Location: reseller.php');
-    exit;
-}
-$admin_name = trim((string)$admin['name']) !== '' ? html(trim((string)$admin['name'])) : 'Admin';
-$first_name = explode(' ', $admin_name)[0] ?: 'Admin';
+$adminId = (int)$_SESSION['admin_id'];
+$actor   = 'admin:' . $adminId;
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $input = json_input();
+    $input  = json_input();
     csrf_require($input);
+    $action = (string)($input['action'] ?? '');
 
-    switch ((string)($input['action'] ?? '')) {
+    switch ($action) {
         case 'logout':
             logout_current();
-            json_out(['success' => true, 'message' => 'Logged out successfully']);
+            json_out(['success' => true]);
 
-        case 'activate_code':
-            $subscriptionId = (int)($input['subscription_id'] ?? 0);
-            $buyerContact   = trim((string)($input['buyer_contact'] ?? ''));
-            if ($subscriptionId <= 0 || $buyerContact === '') {
+        case 'dashboard':
+            $sales    = sales_stats();
+            $usage    = usage_totals();
+            $estimate = usage_estimate_tickets();
+            $active   = active_sessions(500);
+            $stock    = stock_by_plan();
+            $quota    = max(1, (int)$usage['quota']);
+
+            $recent = db()->query(
+                'SELECT tr.id, tr.amount, tr.created_at, tr.buyer_contact, s.name AS plan_name
+                 FROM transactions tr LEFT JOIN subscriptions s ON s.id = tr.subscription_id
+                 ORDER BY tr.id DESC LIMIT 8'
+            )->fetchAll();
+
+            json_out([
+                'success'    => true,
+                'sales'      => $sales,
+                'usage'      => [
+                    'today'        => $usage['today'],
+                    'month'        => $usage['month'],
+                    'quota'        => $quota,
+                    'today_pct'    => round($usage['today'] * 100 / $quota, 1),
+                    'month_pct'    => round($usage['month'] * 100 / $quota, 1),
+                    'today_est'    => $estimate['today'],
+                    'month_est'    => $estimate['month'],
+                ],
+                'active_count' => count($active),
+                'stock'        => $stock,
+                'recent'       => $recent,
+                'low_stock'    => setting_int('low_stock_threshold', 20),
+            ]);
+
+        case 'generate_batch':
+            $planId   = (int)($input['subscription_id'] ?? 0);
+            $quantity = (int)($input['quantity'] ?? 0);
+            $unit     = isset($input['unit_price']) && $input['unit_price'] !== '' ? (float)$input['unit_price'] : null;
+            $note     = isset($input['note']) ? mb_substr(trim((string)$input['note']), 0, 200) : null;
+            $result   = generate_batch($planId, $quantity, $unit, $actor, $note ?: null);
+            json_out($result);
+
+        case 'batches':
+            json_out(['success' => true, 'batches' => batches_recent(40)]);
+
+        case 'search':
+            $q = trim((string)($input['q'] ?? ''));
+            $rows = search_tickets($q, 80);
+            foreach ($rows as &$r) {
+                $r['state_label'] = TICKET_LABELS[$r['state']] ?? $r['state'];
+                $r['remaining']   = ticket_remaining_seconds($r);
+            }
+            json_out(['success' => true, 'tickets' => $rows]);
+
+        case 'revoke':
+            $id  = (string)($input['id'] ?? '');
+            $ok  = $id !== '' && revoke_ticket($id, $actor);
+            json_out(['success' => $ok, 'message' => $ok ? 'revoked' : 'notRevoked']);
+
+        case 'sessions':
+            $rows = active_sessions(300);
+            foreach ($rows as &$r) {
+                $r['remaining'] = ticket_remaining_seconds($r);
+            }
+            json_out(['success' => true, 'sessions' => $rows]);
+
+        case 'plans':
+            json_out(['success' => true, 'plans' => plans_all()]);
+
+        case 'save_plan':
+            $id = (int)($input['id'] ?? 0);
+            $plan = plan_by_id($id);
+            if (!$plan) {
+                json_out(['success' => false, 'message' => 'invalidPlan']);
+            }
+            $rate = max(0.0, (float)($input['rate'] ?? $plan['rate']));
+            $minutes = max(0, (int)($input['duration_minutes'] ?? 0));
+            $days = max(0, (int)($input['duration_days'] ?? 0));
+            if ($minutes === 0 && $days === 0) {
+                json_out(['success' => false, 'message' => 'invalidDuration']);
+            }
+            $limitMb = (int)($input['data_limit_mb'] ?? 0);
+            $limit = $limitMb > 0 ? $limitMb * 1024 * 1024 : null;
+
+            db()->prepare('UPDATE subscriptions SET rate = ?, duration_minutes = ?, duration_days = ?, data_limit_bytes = ? WHERE id = ?')
+                ->execute([$rate, $minutes ?: null, $days ?: null, $limit, $id]);
+            audit('plan_updated', $actor, 'plan=' . $id . ' plafond=' . ($limit ? format_bytes($limit) : 'illimité'));
+            json_out(['success' => true]);
+
+        case 'save_settings':
+            $map = [
+                'portal_name'         => mb_substr(trim((string)($input['portal_name'] ?? '')), 0, 80),
+                'portal_url'          => mb_substr(trim((string)($input['portal_url'] ?? '')), 0, 200),
+                'reseller_commission' => (string)max(0, min(90, (int)($input['reseller_commission'] ?? 25))),
+                'low_stock_threshold' => (string)max(1, min(500, (int)($input['low_stock_threshold'] ?? 20))),
+                'starlink_quota_bytes'=> (string)max(1, (int)($input['starlink_quota_gb'] ?? 500)) * 1024 * 1024 * 1024,
+            ];
+            foreach ($map as $k => $v) {
+                setting_set($k, $v);
+            }
+            audit('settings_updated', $actor, null);
+            json_out(['success' => true, 'settings' => $map]);
+
+        case 'settings':
+            json_out([
+                'success' => true,
+                'settings' => [
+                    'portal_name'          => setting('portal_name'),
+                    'portal_url'           => setting('portal_url', ''),
+                    'reseller_commission'  => setting('reseller_commission'),
+                    'low_stock_threshold'  => setting('low_stock_threshold'),
+                    'starlink_quota_gb'    => (int)round(setting_int('starlink_quota_bytes', 536870912000) / (1024 ** 3)),
+                ],
+            ]);
+
+        case 'resellers':
+            $rows = db()->query(
+                'SELECT r.id, r.name, r.phone, r.email, r.status, r.created_at,
+                        (SELECT COUNT(*) FROM transactions t WHERE t.reseller_id = r.id) AS sales,
+                        (SELECT COALESCE(SUM(commission),0) FROM transactions t WHERE t.reseller_id = r.id) AS commission
+                 FROM resellers r ORDER BY r.id DESC LIMIT 100'
+            )->fetchAll();
+            json_out(['success' => true, 'resellers' => $rows]);
+
+        case 'toggle_reseller':
+            $id = (int)($input['id'] ?? 0);
+            $stmt = db()->prepare('UPDATE resellers SET status = CASE WHEN status = 1 THEN 0 ELSE 1 END WHERE id = ?');
+            $stmt->execute([$id]);
+            audit('reseller_toggled', $actor, 'reseller=' . $id);
+            json_out(['success' => $stmt->rowCount() === 1]);
+
+        case 'create_reseller':
+            $name  = trim((string)($input['name'] ?? ''));
+            $phone = trim((string)($input['phone'] ?? ''));
+            $email = trim((string)($input['email'] ?? ''));
+            $pass  = (string)($input['password'] ?? '');
+            if ($name === '' || !preg_match('/^\+?\d{7,15}$/', $phone) || strlen($pass) < 8) {
                 json_out(['success' => false, 'message' => 'invalidFields']);
             }
-
-            if (!rate_limit_check('activate', 'admin:' . $admin_id, 120, 300)) {
-                json_out(['success' => false, 'message' => 'tooManyAttempts']);
-            }
-
-            $result = activate_code_for_subscriber($subscriptionId, $buyerContact);
-            if (!$result['ok']) {
-                audit('activate_failed', 'admin:' . $admin_id, $result['error']);
-                json_out(['success' => false, 'message' => $result['error']]);
-            }
-
-            // Transaction commerciale (commission de 25 %, inchangée ; vente directe admin)
-            $commission = round(((float)$result['rate']) * 0.25, 2);
             try {
-                db()->prepare('INSERT INTO transactions (reseller_id, subscription_id, buyer_contact, access_code, amount, commission, created_at) VALUES (?,?,?,?,?,?,?)')
-                    ->execute([0, $subscriptionId, $result['contact'], $result['code'], $result['rate'], $commission, date('Y-m-d H:i:s')]);
+                db()->prepare('INSERT INTO resellers (name, phone, email, password, status, created_at) VALUES (?,?,?,?,1,?)')
+                    ->execute([$name, $phone, $email ?: null, password_hash($pass, PASSWORD_DEFAULT), date('Y-m-d H:i:s')]);
+                audit('reseller_created', $actor, 'phone=' . $phone);
+                json_out(['success' => true]);
             } catch (Throwable $e) {
-                audit('transaction_insert_error', 'admin:' . $admin_id, $e->getMessage());
+                json_out(['success' => false, 'message' => 'alreadyExists']);
             }
 
+        case 'audit':
+            $rows = db()->query('SELECT created_at, event, actor, ip, details FROM audit_log ORDER BY id DESC LIMIT 120')->fetchAll();
+            json_out(['success' => true, 'events' => $rows]);
+
+        case 'backup_sql':
+            $sql = db_dump_sql();
+            audit('backup_downloaded', $actor, strlen($sql) . ' octets');
             json_out([
-                'success'           => true,
-                'code'              => $result['code'],
-                'rate'              => $result['rate'],
-                'commission'        => $commission,
-                'confirmation_sent' => '',  // e-mail/SMS configurables en phase 3 (via .env)
-                'expiration_date'   => $result['expiry'],
+                'success'  => true,
+                'filename' => 'zinbconnect_' . date('Ymd-His') . '.sql',
+                'sql'      => $sql,
             ]);
 
-        case 'get_transactions':
-            $stmt = db()->prepare("SELECT t.id, COALESCE(r.name, 'Admin') AS reseller, s.name AS subscription,
-                                          t.buyer_contact, t.access_code, t.amount, t.commission, t.created_at
-                                   FROM transactions t
-                                   JOIN subscriptions s ON t.subscription_id = s.id
-                                   LEFT JOIN resellers r ON t.reseller_id = r.id
-                                   ORDER BY t.id DESC");
-            $stmt->execute();
-            json_out(['success' => true, 'transactions' => $stmt->fetchAll()]);
-
-        case 'get_earnings_data':
-            $stmt = db()->prepare('SELECT COALESCE(SUM(commission), 0) AS total_earnings FROM transactions WHERE reseller_id = ?');
-            $stmt->execute([$admin_id]);
-            $personal_earnings = (float)($stmt->fetchColumn() ?: 0);
-
-            $stmt = db()->prepare('SELECT COALESCE(SUM(amount) - SUM(commission), 0) AS enterprise_earnings FROM transactions');
-            $stmt->execute();
-            $enterprise_earnings = (float)($stmt->fetchColumn() ?: 0);
-
-            $stmt = db()->prepare('SELECT s.name AS subscription, COUNT(*) AS count
-                                   FROM transactions t JOIN subscriptions s ON t.subscription_id = s.id
-                                   GROUP BY s.id');
-            $stmt->execute();
-            $pie_data = ['labels' => [], 'data' => []];
-            foreach ($stmt->fetchAll() as $row) {
-                $pie_data['labels'][] = $row['subscription'];
-                $pie_data['data'][]   = (int)$row['count'];
+        case 'restore':
+            $sql = (string)($input['sql'] ?? '');
+            if (strlen($sql) < 20 || strlen($sql) > 12 * 1024 * 1024) {
+                json_out(['success' => false, 'message' => 'invalidFile']);
             }
-
-            // Bug d'origine corrigé :Daily_earnings était écrasé au lieu d'être accumulé
-            $stmt = db()->prepare('SELECT DATE(created_at) AS date, SUM(amount) - SUM(commission) AS daily_earnings
-                                   FROM transactions
-                                   GROUP BY DATE(created_at) ORDER BY date LIMIT 30');
-            $stmt->execute();
-            $line_data = ['labels' => [], 'data' => []];
-            foreach ($stmt->fetchAll() as $row) {
-                $line_data['labels'][] = $row['date'];
-                $line_data['data'][]   = (float)$row['daily_earnings'];
+            $safety = db_backup_to_file('before_restore');
+            if ($safety === null) {
+                json_out(['success' => false, 'message' => 'backupFailed']);
             }
+            $res = db_restore_replace($sql);
+            $res['safety_file'] = basename($safety);
+            json_out($res);
 
+        case 'export_batch':
+            $batchId = (int)($input['batch_id'] ?? 0);
+            $batch = batch_by_id($batchId);
+            if (!$batch) {
+                json_out(['success' => false, 'message' => 'invalidBatch']);
+            }
+            $rows = batch_tickets($batchId);
+            $csv = "\xEF\xBB\xBF" . "code;forfait;prix;plafond;lot;statut\n";
+            foreach ($rows as $r) {
+                if (empty($r['code_plain'])) {
+                    continue;
+                }
+                $csv .= implode(';', [
+                    $r['code_plain'],
+                    str_replace(';', ',', (string)$r['plan_name']),
+                    number_format((float)$r['price'], 0, ',', ''),
+                    $r['data_limit_bytes'] ? (string)round((int)$r['data_limit_bytes'] / 1048576) : '',
+                    $batch['reference'],
+                    TICKET_LABELS[$r['state']] ?? $r['state'],
+                ]) . "\n";
+            }
             json_out([
-                'success'           => true,
-                'personal_earnings' => $personal_earnings,
-                'global_earnings'   => $enterprise_earnings,
-                'pie_data'          => $pie_data,
-                'line_data'         => $line_data,
+                'success'  => true,
+                'filename' => 'tickets_' . $batch['reference'] . '.csv',
+                'csv'      => $csv,
             ]);
 
-        case 'toggle_reseller_status':
-            $resellerToggleId = (int)($input['reseller_id'] ?? 0);
-            $newStatus = $input['new_status'] ?? null;
-            if ($resellerToggleId <= 0 || !in_array($newStatus, [0, 1], true)) {
-                json_out(['success' => false, 'message' => 'invalidFields'], 400);
+        case 'print_batch':
+            $batchId = (int)($input['batch_id'] ?? 0);
+            $batch = batch_by_id($batchId);
+            if (!$batch) {
+                json_out(['success' => false, 'message' => 'invalidBatch']);
             }
-            $stmt = db()->prepare('UPDATE resellers SET status = ? WHERE id = ?');
-            $stmt->execute([(int)$newStatus, $resellerToggleId]);
-            if ($stmt->rowCount() !== 1) {
-                json_out(['success' => false, 'message' => 'resellerNotFound'], 404);
+            $rows = batch_tickets($batchId);
+            $tickets = [];
+            $missing = 0;
+            foreach ($rows as $r) {
+                if (empty($r['code_plain'])) {
+                    $missing++;
+                    continue;
+                }
+                $plan = [
+                    'duration_minutes' => $r['duration_minutes'] ?? null,
+                    'duration_days'    => $r['duration_days'] ?? null,
+                ];
+                $tickets[] = [
+                    'code'     => $r['code_plain'],
+                    'plan'     => (string)$r['plan_name'],
+                    'price'    => (float)$r['price'],
+                    'limit'    => $r['data_limit_bytes'] !== null ? (int)$r['data_limit_bytes'] : null,
+                    'duration' => format_duration(plan_duration_seconds($plan)),
+                ];
             }
-            audit('reseller_status_changed', 'admin:' . $admin_id, 'reseller=' . $resellerToggleId . ' status=' . (int)$newStatus);
-            json_out(['success' => true, 'status' => (int)$newStatus]);
-
-        case 'get_resellers':
-            // Aucune colonne sensible (mot de passe, TOTP) n'est renvoyée.
-            $stmt = db()->prepare('SELECT id, name, phone, email, address, status, created_at FROM resellers ORDER BY id DESC');
-            $stmt->execute();
-            json_out(['success' => true, 'resellers' => $stmt->fetchAll()]);
-
-        default:
-            json_out(['success' => false, 'message' => 'invalidAction'], 400);
+            if (!$tickets) {
+                json_out(['success' => false, 'message' => 'noCodes', 'missing' => $missing]);
+            }
+            $pdf = pdf_ticket_sheet($tickets, [
+                'portal_name' => setting('portal_name') ?? 'Zinbconnect',
+                'portal_url'  => setting('portal_url', ''),
+                'batch'       => $batch['reference'],
+                'date'        => date('d/m/Y'),
+            ]);
+            audit('batch_printed', $actor, 'lot=' . $batch['reference'] . ' tickets=' . count($tickets));
+            json_out([
+                'success'  => true,
+                'filename' => 'tickets_' . $batch['reference'] . '.pdf',
+                'pdf'      => base64_encode($pdf),
+                'missing'  => $missing,
+            ]);
     }
+
+    json_out(['success' => false, 'message' => 'unknownAction'], 400);
 }
 ?>
 <!DOCTYPE html>
-<html lang="en">
+<html lang="fr">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ZinbConnect - Admin Dashboard</title>
-    <link rel="icon" type="image/x-icon" href="download.png">
-    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://kit.fontawesome.com/4a5d7f6b46.js" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/particles.js@2.0.0/particles.min.js"></script>
-    <style>
-        @keyframes pulse {
-            0% { transform: scale(1); opacity: 0.7; }
-            50% { transform: scale(1.2); opacity: 1; }
-            100% { transform: scale(1); opacity: 0.7; }
-        }
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(-10px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-        @keyframes gradient {
-            0% { background-position: 0% 50%; }
-            50% { background-position: 100% 50%; }
-            100% { background-position: 0% 50%; }
-        }
-        .wifi-icon { animation: pulse 2s infinite; color: #a78bfa; }
-        .dark .wifi-icon { color: #d8b4fe; }
-        .bg-gradient-animate {
-            background: linear-gradient(135deg, #a78bfa, #d8b4fe, #f3e8ff, #a78bfa);
-            background-size: 400%;
-            animation: gradient 12s ease infinite;
-        }
-        .dark .bg-gradient-animate {
-            background: linear-gradient(135deg, #1f2937, #374151, #6b7280, #1f2937);
-            background-size: 400%;
-            animation: gradient 12s ease infinite;
-        }
-        .modal { animation: fadeIn 0.3s ease-out; }
-        .card { transition: transform 0.3s ease, box-shadow 0.3s ease; }
-        .card:hover { transform: translateY(-5px); box-shadow: 0 10px 20px rgba(0, 0, 0, 0.2); }
-        .btn { transition: background-color 0.3s ease, transform 0.2s ease; }
-        .btn:hover { transform: scale(1.05); }
-        .logo-text {
-            font-family: 'Poppins', sans-serif;
-            background: linear-gradient(90deg, #a78bfa, #d8b4fe);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-        }
-        .table-container {
-            max-height: 300px;
-            overflow-y: auto;
-            overflow-x: auto;
-            scrollbar-width: thin;
-            scrollbar-color: #a78bfa #f3e8ff;
-        }
-        .table-container::-webkit-scrollbar {
-            width: 8px;
-        }
-        .table-container::-webkit-scrollbar-track {
-            background: #f3e8ff;
-        }
-        .table-container::-webkit-scrollbar-thumb {
-            background: #a78bfa;
-            border-radius: 4px;
-        }
-        th { position: sticky; top: 0; background: #f3f4f6; z-index: 10; }
-        .dark th { background: #374151; }
-        tr:hover { background-color: #f5f3ff; }
-        .dark tr:hover { background-color: #4b5563; }
-        .logout-btn { color: #ffffff; background-color: #dc2626; }
-        .dark .logout-btn { background-color: #b91c1c; }
-        @media (max-width: 640px) {
-            .logo-text { font-size: 1.25rem; position: static; transform: none; }
-            .logout-btn { padding: 0.5rem 1rem; font-size: 0.875rem; }
-        }
-        @font-face {
-            font-family: 'Poppins';
-            src: url('https://fonts.googleapis.com/css2?family=Poppins:wght@700&display=swap');
-        }
-        .signal-icon-container {
-            position: relative;
-            display: inline-flex;
-            align-items: flex-end;
-            height: 1rem;
-            width: 1rem;
-        }
-        .signal-bar {
-            width: 4px;
-            background: #d8b4fe;
-            margin-left: 2px;
-            transform-origin: bottom;
-        }
-        .dark .signal-bar {
-            background: #a78bfa;
-        }
-        .signal-bar:nth-child(1) { height: 0.5rem; animation: signal 1.5s infinite; }
-        .signal-bar:nth-child(2) { height: 0.8rem; animation: signal 1.5s infinite 0.3s; }
-        .signal-bar:nth-child(3) { height: 1.2rem; animation: signal 1.5s infinite 0.6s; }
-        .signal-icon-container:hover .signal-bar {
-            animation-duration: 1s;
-        }
-        @keyframes signal {
-            0% { transform: scaleY(1); }
-            50% { transform: scaleY(1.5); }
-            100% { transform: scaleY(1); }
-        }
-    </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#4c1d95">
+<meta name="csrf-token" content="<?php echo html(csrf_token()); ?>">
+<title>Administration — <?php echo html(setting('portal_name') ?? 'Zinbconnect'); ?></title>
+<link rel="icon" href="download.png">
+<style>
+:root{--v:#5b21b6;--v2:#7c3aed;--ok:#15803d;--ko:#b91c1c;--warn:#b45309;--bg:#f3f4f6;--card:#fff;--txt:#111827;--muted:#6b7280;--line:#e5e7eb}
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;background:var(--bg);color:var(--txt);font-size:15px;line-height:1.45}
+.top{position:sticky;top:0;z-index:10;background:var(--v);color:#fff;padding:10px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px}
+.top h1{font-size:16px;margin:0;font-weight:700}
+.top small{display:block;font-weight:400;opacity:.8;font-size:11px}
+.top button{background:rgba(255,255,255,.15);border:0;color:#fff;padding:8px 12px;border-radius:8px;font-size:13px;cursor:pointer}
+nav{display:flex;gap:6px;overflow-x:auto;padding:10px 10px 0;background:var(--v)}
+nav button{white-space:nowrap;border:0;background:rgba(255,255,255,.12);color:#fff;padding:9px 13px;border-radius:9px 9px 0 0;font-size:13px;cursor:pointer}
+nav button.active{background:var(--bg);color:var(--v);font-weight:700}
+main{max-width:900px;margin:0 auto;padding:14px 12px 60px}
+section{display:none}
+section.active{display:block}
+h2{font-size:15px;margin:18px 0 8px;text-transform:uppercase;letter-spacing:.4px;color:var(--muted)}
+h2:first-child{margin-top:0}
+.card{background:var(--card);border-radius:12px;padding:14px;box-shadow:0 1px 2px rgba(0,0,0,.06);margin-bottom:12px}
+.grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+@media(min-width:640px){.grid{grid-template-columns:repeat(4,1fr)}}
+.kpi{background:var(--card);border-radius:12px;padding:12px;box-shadow:0 1px 2px rgba(0,0,0,.06)}
+.kpi span{display:block;font-size:12px;color:var(--muted)}
+.kpi strong{font-size:20px;display:block;margin-top:2px;font-variant-numeric:tabular-nums}
+.kpi em{font-style:normal;font-size:11px;color:var(--muted)}
+label{display:block;font-size:13px;font-weight:600;margin:10px 0 4px}
+input,select,textarea{width:100%;padding:11px;border:1px solid var(--line);border-radius:9px;font-size:15px;background:#fff;color:var(--txt)}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--v2);box-shadow:0 0 0 3px rgba(124,58,237,.12)}
+button.primary{background:var(--v);color:#fff;border:0;padding:12px 16px;border-radius:9px;font-size:15px;font-weight:600;cursor:pointer}
+button.primary:disabled{opacity:.55}
+button.ghost{background:#f3f4f6;color:var(--txt);border:1px solid var(--line);padding:9px 12px;border-radius:8px;font-size:13px;cursor:pointer}
+button.danger{background:#fee2e2;color:var(--ko);border:1px solid #fecaca;padding:8px 11px;border-radius:8px;font-size:13px;cursor:pointer}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+@media(min-width:620px){.row2{grid-template-columns:repeat(4,1fr)}}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:8px 6px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-size:11px;text-transform:uppercase;color:var(--muted);letter-spacing:.3px}
+.scroll{overflow-x:auto}
+.chip{display:inline-block;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:700;white-space:nowrap}
+.s-available{background:#ede9fe;color:#5b21b6}
+.s-active{background:#dcfce7;color:#166534}
+.s-used{background:#fef3c7;color:#92400e}
+.s-expired{background:#f3f4f6;color:#4b5563}
+.s-revoked{background:#fee2e2;color:#991b1b}
+.bar{height:9px;background:#e5e7eb;border-radius:99px;overflow:hidden;margin-top:6px}
+.bar i{display:block;height:100%;background:var(--v2)}
+.bar i.warn{background:#f59e0b}
+.bar i.ko{background:#ef4444}
+.msg{display:none;margin-top:10px;padding:11px 12px;border-radius:9px;font-size:14px}
+.msg.show{display:block}
+.msg.ok{background:#f0fdf4;color:#14532d;border:1px solid #bbf7d0}
+.msg.ko{background:#fef2f2;color:#7f1d1d;border:1px solid #fecaca}
+.muted{color:var(--muted);font-size:12px}
+.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.pill{display:inline-block;background:#f5f3ff;border:1px solid #ddd6fe;color:#5b21b6;border-radius:8px;padding:4px 9px;font-size:12px;margin:2px 4px 2px 0}
+dialog{border:0;border-radius:14px;padding:0;width:min(92vw,420px);box-shadow:0 10px 40px rgba(0,0,0,.25)}
+dialog .body{padding:18px}
+dialog::backdrop{background:rgba(0,0,0,.45)}
+</style>
 </head>
-<body class="min-h-screen bg-gradient-animate flex flex-col font-sans text-gray-900 dark:text-gray-100 dark:bg-gray-900 relative">
-    <div id="particles-js" class="absolute inset-0 z-0 opacity-15"></div>
-    <header class="w-full p-4 flex justify-between items-center bg-white dark:bg-gray-600 shadow-lg relative z-10">
-        <h1 class="text-1xl font-bold text-purple-500 dark:text-purple-200 flex items-center justify-left animate-pulse">
-            <div class="signal-icon-container mr-2">
-                <div class="signal-bar"></div>
-                <div class="signal-bar"></div>
-                <div class="signal-bar"></div>
-            </div>
-            ZinbConnect
-        </h1>
-        <div class="flex items-center space-x-2">
-            <button id="logoutBtn" class="px-2 py-1 sm:px-4 sm:py-2 text-sm sm:text-base bg-red-600 text-white rounded-md hover:bg-red-700 flex items-center logout-btn btn">
-                <i class="fas fa-sign-out-alt mr-1 sm:mr-2"></i> <span id="logoutText">Logout</span>
-            </button>
-            <select id="languageSelect" class="px-2 py-1 sm:px-3 sm:py-2 text-sm sm:text-base border rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100">
-                <option value="en">English</option>
-                <option value="fr">Français</option>
-                <option value="sw">Kiswahili</option>
-            </select>
-        </div>
-    </header>
+<body>
 
-    <main class="flex-grow p-6 max-w-7xl mx-auto w-full relative z-10">
-        <div class="text-center mb-8">
-            <h1 class="text-3xl sm:text-4xl font-bold text-purple-400 dark:text-purple-200 text-opacity-100" id="welcomeText">Welcome, <?php echo htmlspecialchars($first_name); ?></h1>
-        </div>
+<div class="top">
+  <div>
+    <h1>Administration</h1>
+    <small id="whoami"><?php echo html(setting('portal_name') ?? 'Zinbconnect'); ?> · Kitutu</small>
+  </div>
+  <button id="logoutBtn" type="button">Déconnexion</button>
+</div>
 
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <div class="bg-white bg-opacity-80 dark:bg-gray-800 dark:bg-opacity-80 p-6 rounded-xl shadow-lg card">
-                <h2 class="text-xl font-bold mb-4 text-purple-600 dark:text-purple-400 text-opacity-100 flex items-center">
-                    <i class="fas fa-key mr-2 wifi-icon"></i> <span id="activateCodeTitle">Activate Code</span>
-                </h2>
-                <div class="space-y-4">
-                    <select id="subscriptionId" class="w-full p-2 border rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 text-opacity-100" required>
-                        <option value="" id="selectSubscription">Select Subscription</option>
-                        <?php
-                        // Forfaits chargés une fois en PDO (requête préparée) et échappés à l'affichage.
-                        // $subscriptions est défini en haut du fichier (section admin authentifiée).
-                        try {
-                            $subscriptions = db()->query('SELECT id, name, rate FROM subscriptions ORDER BY id')->fetchAll();
-                        } catch (Throwable $e) {
-                            audit('subscriptions_load_error', 'admin', $e->getMessage());
-                            $subscriptions = [];
-                        }
-                        if (count($subscriptions) > 0) {
-                            foreach ($subscriptions as $sub) {
-                                echo "<option value='" . html((string)$sub['id']) . "' data-rate='" . html((string)$sub['rate']) . "'>"
-                                    . html((string)$sub['name']) . " - " . html((string)$sub['rate']) . " CDF</option>";
-                            }
-                        } else {
-                            echo "<option value='' disabled id='noSubscriptions'>Error loading subscriptions</option>";
-                        }
-                        ?>
-                    </select>
-                    <input id="buyerContact" type="text" class="w-full p-2 border rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 text-opacity-100" placeholder="Phone or Email" required>
-                    <button id="activateBtn" class="w-full p-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 btn">Activate</button>
-                </div>
-                <div id="codeResult" class="mt-4 hidden">
-                    <div class="flex flex-wrap gap-2 mt-2">
-                        <button id="copyCode" class="px-4 py-2 bg-gray-600 text-white rounded-md hover:bg-gray-700 btn"><i class="fas fa-copy mr-1"></i> <span id="copyText">Copy</span></button>
-                        <button id="printCode" class="px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 btn"><i class="fas fa-print mr-1"></i> <span id="printText">Print</span></button>
-                    </div>
-                </div>
-            </div>
+<nav id="nav">
+  <button data-tab="dash" class="active">Tableau de bord</button>
+  <button data-tab="tickets">Tickets</button>
+  <button data-tab="sales">Ventes</button>
+  <button data-tab="sessions">Sessions</button>
+  <button data-tab="resellers">Revendeurs</button>
+  <button data-tab="settings">Réglages</button>
+  <button data-tab="backup">Sauvegarde</button>
+  <button data-tab="log">Journal</button>
+</nav>
 
-            <div class="bg-white bg-opacity-80 dark:bg-gray-800 dark:bg-opacity-80 p-6 rounded-xl shadow-lg card">
-                <h2 class="text-xl font-bold mb-4 text-purple-600 dark:text-purple-400 text-opacity-100 flex items-center">
-                    <i class="fas fa-chart-line mr-2 wifi-icon"></i> <span id="earningsTitle">Earnings</span>
-                </h2>
-                <div class="text-center mb-4">
-                    <p id="personalEarnings" class="text-2xl font-bold text-green-600 text-opacity-100">0 CDF</p>
-                    <p id="enterpriseEarnings" class="text-xl font-bold text-blue-600 text-opacity-100 mt-2">0 CDF (Enterprise)</p>
-                </div>
-                <div class="flex justify-between mb-4">
-                    <button id="exportEarnings" class="px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 btn">
-                        <i class="fas fa-file-excel mr-1"></i> <span id="exportEarningsText">Export</span>
-                    </button>
-                    <button id="viewInsights" class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 btn">
-                        <i class="fas fa-lightbulb mr-1"></i> <span id="insightsText">View Insights</span>
-                    </button>
-                </div>
-                <div class="grid grid-cols-1 gap-4">
-                    <canvas id="pieChart" class="w-full h-48 sm:h-64"></canvas>
-                    <canvas id="lineChart" class="w-full h-48 sm:h-64"></canvas>
-                </div>
-            </div>
-
-            <div class="bg-white bg-opacity-80 dark:bg-gray-800 dark:bg-opacity-80 p-6 rounded-xl shadow-lg lg:col-span-2 card">
-                <h2 class="text-xl font-bold mb-4 text-purple-600 dark:text-purple-400 text-opacity-100 flex items-center">
-                    <i class="fas fa-table mr-2 wifi-icon"></i> <span id="transactionsTitle">Transactions</span>
-                </h2>
-                <button id="exportTransactions" class="mb-4 px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 btn">
-                    <i class="fas fa-file-excel mr-1"></i> <span id="exportTransactionsText">Export</span>
-                </button>
-                <div class="overflow-x-auto">
-                    <table id="transactionsTable" class="w-full border-collapse">
-                        <thead>
-                            <tr class="bg-purple-100 dark:bg-gray-800">
-                                <th class="p-2 text-left" id="thId">ID</th>
-                                <th class="p-2 text-left" id="thReseller">Reseller</th>
-                                <th class="p-2 text-left" id="thSubscription">Subscription</th>
-                                <th class="p-2 text-left" id="thBuyerContact">Buyer Contact</th>
-                                <th class="p-2 text-left" id="thCode">Code</th>
-                                <th class="p-2 text-left" id="thAmount">Amount (CDF)</th>
-                                <th class="p-2 text-left" id="thCommission">Commission (CDF)</th>
-                                <th class="p-2 text-left" id="thDate">Date</th>
-                            </tr>
-                        </thead>
-                        <tbody id="transactionsBody" class="table-container"></tbody>
-                    </table>
-                </div>
-            </div>
-
-            <div class="bg-white bg-opacity-80 dark:bg-gray-800 dark:bg-opacity-80 p-6 rounded-xl shadow-lg lg:col-span-2 card">
-                <h2 class="text-xl font-bold mb-4 text-purple-600 dark:text-purple-400 text-opacity-100 flex items-center">
-                    <i class="fas fa-users mr-2 wifi-icon"></i> <span id="resellersTitle">Resellers</span>
-                </h2>
-                <button id="exportResellers" class="mb-4 px-4 py-2 bg-green-600 text-white rounded-md hover:bg-green-700 btn">
-                    <i class="fas fa-file-excel mr-1"></i> <span id="exportResellersText">Export</span>
-                </button>
-                <div class="overflow-x-auto">
-                    <table id="resellersTable" class="w-full border-collapse rounded-md shadow-sm">
-                        <thead>
-                            <tr class="bg-purple-100 dark:bg-gray-800">
-                                <th class="p-2 text-left" id="thResellerId">ID</th>
-                                <th class="p-2 text-left" id="thName">Name</th>
-                                <th class="p-2 text-left" id="thPhone">Phone</th>
-                                <th class="p-2 text-left" id="thEmail">Email</th>
-                                <th class="p-2 text-left" id="thAddress">Address</th>
-                                <th class="p-2 text-left" id="thStatus">Status</th>
-                                <th class="p-2 text-left" id="thCreated">Created</th>
-                                <th class="p-2 text-left" id="thAction">Action</th>
-                            </tr>
-                        </thead>
-                        <tbody id="resellersBody" class="table-container"></tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-    </main>
-
-    <div id="modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden z-20">
-        <div class="bg-white bg-opacity-80 dark:bg-gray-800 dark:bg-opacity-80 p-6 rounded-xl shadow-2xl max-w-md w-11/12 sm:w-full modal">
-            <div class="flex justify-between items-center mb-4">
-                <h3 id="modalTitle" class="text-lg font-bold text-purple-600 dark:text-purple-400"></h3>
-                <button id="closeModal" class="text-gray-600 dark:text-gray-400 hover:text-gray-800">
-                    <i class="fas fa-times"></i>
-                </button>
-            </div>
-            <p id="modalMessage" class="text-gray-700 dark:text-gray-300"></p>
-            <div id="modalContent" class="mt-4"></div>
-            <div class="mt-6 flex justify-end">
-                <button id="modalCloseBtn" class="px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 btn">Close</button>
-            </div>
-        </div>
+<main>
+  <!-- ============ TABLEAU DE BORD ============ -->
+  <section id="tab-dash" class="active">
+    <div class="grid" id="kpis">
+      <div class="kpi"><span>Ventes aujourd'hui</span><strong id="k-today">—</strong><em id="k-today-n"></em></div>
+      <div class="kpi"><span>Cette semaine</span><strong id="k-week">—</strong><em id="k-week-n"></em></div>
+      <div class="kpi"><span>Ce mois</span><strong id="k-month">—</strong><em id="k-month-n"></em></div>
+      <div class="kpi"><span>Sessions actives</span><strong id="k-active">—</strong><em>en cours</em></div>
     </div>
 
-    <footer class="w-full p-4 bg-white bg-opacity-80 dark:bg-gray-800 dark:bg-opacity-80 text-center text-purple-600 dark:text-purple-400 text-opacity-100 relative z-10">
-        <p id="footerText">©2025 Zinbo Technology</p>
-    </footer>
+    <h2>Consommation Starlink</h2>
+    <div class="card">
+      <div style="display:flex;justify-content:space-between"><span>Aujourd'hui</span><strong id="u-today">—</strong></div>
+      <div class="bar"><i id="u-today-bar" style="width:0"></i></div>
+      <div class="muted" id="u-today-note"></div>
 
-    <meta name="csrf-token" content="<?php echo html(csrf_token()); ?>">
-    <script>
-        // Jeton CSRF lu depuis la page (rotaté à chaque connexion)
-        const CSRF = document.querySelector('meta[name="csrf-token"]').content;
+      <div style="display:flex;justify-content:space-between;margin-top:14px"><span>Ce mois</span><strong id="u-month">—</strong></div>
+      <div class="bar"><i id="u-month-bar" style="width:0"></i></div>
+      <div class="muted" id="u-month-note"></div>
+    </div>
 
-        particlesJS('particles-js', {
-            particles: {
-                number: { value: 50, density: { enable: true, value_area: 800 } },
-                color: { value: '#a78bfa' },
-                shape: { type: 'circle' },
-                opacity: { value: 0.5, random: true },
-                size: { value: 3, random: true },
-                line_linked: { enable: true, distance: 150, color: '#d8b4fe', opacity: 0.4, width: 1 },
-                move: { enable: true, speed: 2, direction: 'none', random: true, straight: false, out_mode: 'out' }
-            },
-            interactivity: {
-                detect_on: 'canvas',
-                events: { onhover: { enable: true, mode: 'repulse' }, onclick: { enable: true, mode: 'push' }, resize: true },
-                modes: { repulse: { distance: 100, duration: 0.4 }, push: { particles_nb: 4 } }
-            },
-            retina_detect: true
+    <h2>Stock de tickets</h2>
+    <div class="card scroll">
+      <table><thead><tr><th>Forfait</th><th>Tickets non utilisés</th></tr></thead><tbody id="stock-body"></tbody></table>
+      <p class="muted" id="stock-note"></p>
+    </div>
+
+    <h2>Dernières ventes</h2>
+    <div class="card scroll">
+      <table><thead><tr><th>Date</th><th>Forfait</th><th>Montant</th></tr></thead><tbody id="recent-body"></tbody></table>
+    </div>
+  </section>
+
+  <!-- ============ TICKETS ============ -->
+  <section id="tab-tickets">
+    <h2>Générer un lot de tickets</h2>
+    <div class="card">
+      <form id="genForm">
+        <label for="gen-plan">Forfait</label>
+        <select id="gen-plan" required></select>
+        <div class="row2">
+          <div>
+            <label for="gen-qty">Quantité</label>
+            <input id="gen-qty" type="number" min="1" max="1000" value="20" required>
+          </div>
+          <div>
+            <label for="gen-price">Prix unitaire (FC)</label>
+            <input id="gen-price" type="number" min="0" step="100" placeholder="prix du forfait">
+          </div>
+        </div>
+        <label for="gen-note">Note (facultatif)</label>
+        <input id="gen-note" type="text" maxlength="120" placeholder="ex. lot revendeur marché">
+        <div class="actions">
+          <button class="primary" id="genBtn" type="submit">Générer le lot</button>
+        </div>
+        <div class="msg" id="genMsg"></div>
+        <div class="actions" id="genResult" style="display:none">
+          <button class="ghost" id="printBtn" type="button">Imprimer le PDF (QR)</button>
+          <button class="ghost" id="csvBtn" type="button">Télécharger le CSV</button>
+        </div>
+      </form>
+    </div>
+
+    <h2>Rechercher un ticket</h2>
+    <div class="card">
+      <div style="display:flex;gap:8px">
+        <input id="searchInput" type="text" placeholder="Code, téléphone, lot…" autocomplete="off">
+        <button class="primary" id="searchBtn" type="button">Chercher</button>
+      </div>
+      <div class="scroll" style="margin-top:10px">
+        <table><thead><tr><th>Code / lot</th><th>Forfait</th><th>Statut</th><th>Échéance</th><th></th></tr></thead><tbody id="search-body"></tbody></table>
+      </div>
+      <p class="muted" id="search-note"></p>
+    </div>
+
+    <h2>Lots récents</h2>
+    <div class="card scroll">
+      <table><thead><tr><th>Lot</th><th>Forfait</th><th>Qté</th><th>Utilisés</th><th>PDF</th></tr></thead><tbody id="batches-body"></tbody></table>
+    </div>
+  </section>
+
+  <!-- ============ VENTES ============ -->
+  <section id="tab-sales">
+    <h2>Ce mois par forfait</h2>
+    <div class="card scroll">
+      <table><thead><tr><th>Forfait</th><th>Tickets</th><th>Montant</th></tr></thead><tbody id="sales-body"></tbody></table>
+    </div>
+    <div class="card">
+      <p class="muted">Les montants sont enregistrés à l'activation d'un ticket. Les tickets générés mais non vendus n'apparaissent pas.</p>
+    </div>
+  </section>
+
+  <!-- ============ SESSIONS ============ -->
+  <section id="tab-sessions">
+    <h2>Sessions actives</h2>
+    <div class="card scroll">
+      <table><thead><tr><th>Code</th><th>Forfait</th><th>Temps restant</th><th>Données</th><th></th></tr></thead><tbody id="sessions-body"></tbody></table>
+      <p class="muted" id="sessions-note"></p>
+    </div>
+  </section>
+
+  <!-- ============ REVENDEURS ============ -->
+  <section id="tab-resellers">
+    <h2>Revendeurs</h2>
+    <div class="card scroll">
+      <table><thead><tr><th>Nom</th><th>Téléphone</th><th>Ventes</th><th>Statut</th><th></th></tr></thead><tbody id="resellers-body"></tbody></table>
+    </div>
+    <h2>Ajouter un revendeur</h2>
+    <div class="card">
+      <form id="resellerForm">
+        <label for="r-name">Nom</label>
+        <input id="r-name" type="text" maxlength="120" required>
+        <label for="r-phone">Téléphone (identifiant de connexion)</label>
+        <input id="r-phone" type="tel" placeholder="+243…" required>
+        <label for="r-email">E-mail (facultatif)</label>
+        <input id="r-email" type="email">
+        <label for="r-pass">Mot de passe (8 caractères minimum)</label>
+        <input id="r-pass" type="password" minlength="8" required>
+        <div class="actions"><button class="primary" type="submit">Créer le revendeur</button></div>
+        <div class="msg" id="resellerMsg"></div>
+      </form>
+    </div>
+  </section>
+
+  <!-- ============ RÉGLAGES ============ -->
+  <section id="tab-settings">
+    <h2>Forfaits et plafonds de données</h2>
+    <div class="card scroll">
+      <table><thead><tr><th>Forfait</th><th>Prix (FC)</th><th>Durée</th><th>Plafond (Mo)</th><th></th></tr></thead><tbody id="plans-body"></tbody></table>
+      <p class="muted">Plafond vide = illimité. Valeurs conseillées : 1 h = 100 Mo, 12 h = 300 Mo, 24 h = 500 Mo, 3 j = 1 024 Mo.</p>
+    </div>
+
+    <h2>Portail et Starlink</h2>
+    <div class="card">
+      <form id="settingsForm">
+        <label for="s-name">Nom du portail</label>
+        <input id="s-name" type="text" maxlength="80">
+        <label for="s-url">Adresse du portail (pour les QR codes)</label>
+        <input id="s-url" type="url" placeholder="https://portail.exemple.cd/index.php">
+        <div class="row2">
+          <div>
+            <label for="s-quota">Forfait Starlink (Go/mois)</label>
+            <input id="s-quota" type="number" min="1" value="500">
+          </div>
+          <div>
+            <label for="s-comm">Commission revendeur (%)</label>
+            <input id="s-comm" type="number" min="0" max="90" value="25">
+          </div>
+          <div>
+            <label for="s-stock">Alerte stock (tickets)</label>
+            <input id="s-stock" type="number" min="1" max="500" value="20">
+          </div>
+        </div>
+        <div class="actions"><button class="primary" type="submit">Enregistrer</button></div>
+        <div class="msg" id="settingsMsg"></div>
+      </form>
+    </div>
+  </section>
+
+  <!-- ============ SAUVEGARDE ============ -->
+  <section id="tab-backup">
+    <h2>Sauvegarde</h2>
+    <div class="card">
+      <p>Téléchargez une copie complète de la base (structure + données) dans un fichier texte. Conservez-la hors ligne : c'est votre seul filet de sécurité en cas de panne du serveur.</p>
+      <div class="actions">
+        <button class="primary" id="backupBtn" type="button">Télécharger la sauvegarde</button>
+      </div>
+      <div class="msg" id="backupMsg"></div>
+      <p class="muted">Conseil : une sauvegarde par semaine, et avant chaque mise à jour.</p>
+    </div>
+
+    <h2>Restauration</h2>
+    <div class="card">
+      <p><strong>Attention :</strong> la restauration remplace toutes les données actuelles. Une sauvegarde automatique est faite avant, mais vérifiez le fichier choisi.</p>
+      <input id="restoreFile" type="file" accept=".sql,text/plain">
+      <div class="actions">
+        <button class="danger" id="restoreBtn" type="button">Restaurer ce fichier</button>
+      </div>
+      <div class="msg" id="restoreMsg"></div>
+    </div>
+  </section>
+
+  <!-- ============ JOURNAL ============ -->
+  <section id="tab-log">
+    <h2>Journal d'audit</h2>
+    <div class="card scroll">
+      <table><thead><tr><th>Date</th><th>Événement</th><th>Acteur</th><th>IP</th><th>Détail</th></tr></thead><tbody id="log-body"></tbody></table>
+    </div>
+  </section>
+</main>
+
+<dialog id="confirmDlg">
+  <div class="body">
+    <h2 style="margin:0 0 8px">Confirmation</h2>
+    <p id="confirmText" style="margin:0 0 14px"></p>
+    <div class="actions">
+      <button class="primary" id="confirmYes" type="button">Confirmer</button>
+      <button class="ghost" id="confirmNo" type="button">Annuler</button>
+    </div>
+  </div>
+</dialog>
+
+<script>
+(function () {
+  var csrf = document.querySelector('meta[name="csrf-token"]').content;
+  var $ = function (id) { return document.getElementById(id); };
+  var state = { plans: [], lastBatch: null };
+
+  function esc(s) {
+    return String(s === null || s === undefined ? '' : s).replace(/[&<>"']/g, function (c) {
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];
+    });
+  }
+  function fc(n) { return Number(n || 0).toLocaleString('fr-FR') + ' FC'; }
+  function bytes(b) {
+    if (b === null || b === undefined || b === '') return 'illimité';
+    var u = ['o','Ko','Mo','Go'], i = 0, v = Number(b);
+    while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
+    return v.toFixed(i === 0 ? 0 : 1).replace('.', ',') + ' ' + u[i];
+  }
+  function duration(sec) {
+    sec = Math.max(0, Math.floor(sec));
+    var j = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60);
+    if (j > 0) return j + ' j ' + h + ' h';
+    if (h > 0) return h + ' h ' + String(m).padStart(2, '0');
+    return m + ' min';
+  }
+  function dt(s) {
+    if (!s) return '—';
+    var d = new Date(String(s).replace(' ', 'T'));
+    return isNaN(d) ? esc(s) : d.toLocaleString('fr-FR', {day:'2-digit', month:'2-digit', year:'2-digit', hour:'2-digit', minute:'2-digit'});
+  }
+  function chip(st) {
+    return '<span class="chip s-' + esc(st) + '">' + esc(stateLabel(st)) + '</span>';
+  }
+  function stateLabel(st) {
+    return {available:'Non utilisé', active:'En cours', used:'Consommé', expired:'Expiré', revoked:'Révoqué'}[st] || st;
+  }
+  function showMsg(el, text, ok) {
+    el.className = 'msg show ' + (ok ? 'ok' : 'ko');
+    el.textContent = text;
+  }
+
+  async function api(action, payload) {
+    var res = await fetch('admin.php', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json', 'X-CSRF-Token': csrf},
+      body: JSON.stringify(Object.assign({action: action, csrf: csrf}, payload || {}))
+    });
+    if (res.status === 403) { location.reload(); throw new Error('session'); }
+    return res.json();
+  }
+
+  function download(filename, content, type) {
+    var blob = content instanceof Blob ? content : new Blob([content], {type: type || 'text/plain;charset=utf-8'});
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1500);
+  }
+
+  function confirmBox(text) {
+    return new Promise(function (resolve) {
+      $('confirmText').textContent = text;
+      var dlg = $('confirmDlg');
+      dlg.showModal();
+      $('confirmYes').onclick = function () { dlg.close(); resolve(true); };
+      $('confirmNo').onclick = function () { dlg.close(); resolve(false); };
+      dlg.addEventListener('close', function once() { dlg.removeEventListener('close', once); resolve(false); });
+    });
+  }
+
+  // ---------- Navigation ----------
+  var nav = $('nav');
+  nav.addEventListener('click', function (e) {
+    var btn = e.target.closest('button[data-tab]');
+    if (!btn) return;
+    Array.prototype.forEach.call(nav.querySelectorAll('button'), function (b) { b.classList.toggle('active', b === btn); });
+    Array.prototype.forEach.call(document.querySelectorAll('main section'), function (s) {
+      s.classList.toggle('active', s.id === 'tab-' + btn.dataset.tab);
+    });
+    loadTab(btn.dataset.tab);
+  });
+
+  function loadTab(tab) {
+    if (tab === 'dash') loadDashboard();
+    if (tab === 'tickets') { loadPlans(); loadBatches(); }
+    if (tab === 'sales') loadSales();
+    if (tab === 'sessions') loadSessions();
+    if (tab === 'resellers') loadResellers();
+    if (tab === 'settings') { loadPlans(); loadSettings(); }
+    if (tab === 'log') loadLog();
+  }
+
+  // ---------- Tableau de bord ----------
+  async function loadDashboard() {
+    var d = await api('dashboard');
+    if (!d.success) return;
+    $('k-today').textContent = fc(d.sales.today.total);
+    $('k-today-n').textContent = d.sales.today.count + ' ticket(s)';
+    $('k-week').textContent = fc(d.sales.week.total);
+    $('k-week-n').textContent = d.sales.week.count + ' ticket(s)';
+    $('k-month').textContent = fc(d.sales.month.total);
+    $('k-month-n').textContent = d.sales.month.count + ' ticket(s)';
+    $('k-active').textContent = d.active_count;
+
+    $('u-today').textContent = bytes(d.usage.today) + ' / ' + bytes(d.usage.quota);
+    $('u-today-bar').style.width = Math.min(100, d.usage.today_pct) + '%';
+    $('u-today-bar').className = d.usage.today_pct > 90 ? 'ko' : (d.usage.today_pct > 70 ? 'warn' : '');
+    $('u-today-note').textContent = d.usage.today_pct + ' % du forfait mensuel' +
+      (d.usage.today === 0 ? ' · estimation tickets : ' + bytes(d.usage.today_est) : ' (mesuré sur le routeur)');
+
+    $('u-month').textContent = bytes(d.usage.month) + ' / ' + bytes(d.usage.quota);
+    $('u-month-bar').style.width = Math.min(100, d.usage.month_pct) + '%';
+    $('u-month-bar').className = d.usage.month_pct > 90 ? 'ko' : (d.usage.month_pct > 70 ? 'warn' : '');
+    $('u-month-note').textContent = d.usage.month_pct + ' % consommé' +
+      (d.usage.month === 0 ? ' · estimation tickets : ' + bytes(d.usage.month_est) : '');
+
+    $('stock-body').innerHTML = d.stock.map(function (s) {
+      var low = Number(s.available) <= d.low_stock;
+      return '<tr><td>' + esc(s.name) + '</td><td>' + esc(s.available) +
+        ' ' + (low ? '<span class="chip s-used">stock bas</span>' : '') + '</td></tr>';
+    }).join('') || '<tr><td colspan="2" class="muted">Aucun forfait</td></tr>';
+    $('stock-note').textContent = 'Seuil d\'alerte : ' + d.low_stock + ' tickets.';
+
+    $('recent-body').innerHTML = d.recent.map(function (r) {
+      return '<tr><td>' + dt(r.created_at) + '</td><td>' + esc(r.plan_name || '—') + '</td><td>' + fc(r.amount) + '</td></tr>';
+    }).join('') || '<tr><td colspan="3" class="muted">Aucune vente enregistrée</td></tr>';
+  }
+
+  function loadSales() {
+    api('dashboard').then(function (d) {
+      if (!d.success) return;
+      $('sales-body').innerHTML = (d.sales.by_plan || []).map(function (p) {
+        return '<tr><td>' + esc(p.name) + '</td><td>' + p.nb + '</td><td>' + fc(p.total) + '</td></tr>';
+      }).join('') || '<tr><td colspan="3" class="muted">Aucune vente ce mois</td></tr>';
+    });
+  }
+
+  // ---------- Forfaits ----------
+  async function loadPlans() {
+    var d = await api('plans');
+    if (!d.success) return;
+    state.plans = d.plans;
+    $('gen-plan').innerHTML = d.plans.map(function (p) {
+      return '<option value="' + p.id + '" data-rate="' + p.rate + '">' + esc(p.name) + ' — ' + fc(p.rate) + '</option>';
+    }).join('');
+    if (!$('gen-price').value && d.plans.length) $('gen-price').value = d.plans[0].rate;
+
+    $('plans-body').innerHTML = d.plans.map(function (p) {
+      var mins = Number(p.duration_minutes || 0), days = Number(p.duration_days || 0);
+      var limitMb = p.data_limit_bytes ? Math.round(Number(p.data_limit_bytes) / 1048576) : '';
+      return '<tr data-id="' + p.id + '">' +
+        '<td>' + esc(p.name) + '</td>' +
+        '<td><input class="p-rate" type="number" min="0" step="100" value="' + p.rate + '" style="width:90px"></td>' +
+        '<td><div style="display:flex;gap:4px">' +
+          '<input class="p-min" type="number" min="0" value="' + mins + '" style="width:64px" title="minutes">min ' +
+          '<input class="p-days" type="number" min="0" value="' + days + '" style="width:52px" title="jours">j</div></td>' +
+        '<td><input class="p-limit" type="number" min="0" step="50" value="' + limitMb + '" style="width:80px" placeholder="∞"></td>' +
+        '<td><button class="ghost p-save" type="button">OK</button></td>' +
+      '</tr>';
+    }).join('');
+
+    Array.prototype.forEach.call(document.querySelectorAll('.p-save'), function (btn) {
+      btn.onclick = async function () {
+        var tr = btn.closest('tr');
+        var r = await api('save_plan', {
+          id: tr.dataset.id,
+          rate: tr.querySelector('.p-rate').value,
+          duration_minutes: tr.querySelector('.p-min').value,
+          duration_days: tr.querySelector('.p-days').value,
+          data_limit_mb: tr.querySelector('.p-limit').value
         });
+        btn.textContent = r.success ? '✓' : '✗';
+        if (r.success) { loadPlans(); setTimeout(function () { btn.textContent = 'OK'; }, 1200); }
+      };
+    });
+  }
 
-        const translations = {
-            en: {
-                logout: "Logout",
-                welcome: "Welcome",
-                activateCode: "Activate Code",
-                selectSubscription: "Select Subscription",
-                noSubscriptions: "No subscriptions available",
-                buyerContactPlaceholder: "Phone or Email",
-                activate: "Activate",
-                activating: "Activating...",
-                copy: "Copy",
-                print: "Print",
-                earnings: "Earnings",
-                enterprise: "Enterprise",
-                export: "Export",
-                insights: "View Insights",
-                transactions: "Transactions",
-                thId: "ID",
-                thReseller: "Reseller",
-                thSubscription: "Subscription",
-                thBuyerContact: "Buyer Contact",
-                thCode: "Code",
-                thAmount: "Amount (CDF)",
-                thCommission: "Commission (CDF)",
-                thDate: "Date",
-                resellers: "Resellers",
-                thResellerId: "ID",
-                thName: "Name",
-                thPhone: "Phone",
-                thEmail: "Email",
-                thAddress: "Address",
-                thStatus: "Status",
-                thCreated: "Created",
-                thAction: "Action",
-                approve: "Approved",
-                unapprove: "Unapproved",
-                footer: "©2025 Zinbo Technology",
-                loading: "Loading...",
-                noData: "No data yet",
-                noResellers: "No resellers yet",
-                success: "Code activated successfully!",
-                logoutSuccess: "Logged out successfully!",
-                invalidFields: "Please fill all fields.",
-                invalidSubscription: "Invalid subscription selected.",
-                invalidContact: "Invalid email or phone format.",
-                activationFailed: "Code activation failed. Please try again.",
-                emailFailed: "Failed to send email. Please try again.",
-                smsFailed: "Failed to send SMS. Please try again.",
-                transactionInsertFailed: "Failed to record transaction.",
-                currentCodesInsertFailed: "Failed to store code.",
-                dbCleanupFailed: "Failed to clean expired codes.",
-                codeGenerationFailed: "Failed to generate unique code.",
-                dbConnectionFailed: "Server error. Contact support.",
-                emailConfigFailed: "Email service not configured.",
-                smsConfigFailed: "SMS service not configured.",
-                copied: "Code copied to clipboard!",
-                statusUpdated: "Reseller status updated!",
-                statusFailed: "Failed to update reseller status.",
-                insightsTitle: "Business Insights & Predictions",
-                growthAdvice: "Growth Advice",
-                securityWarnings: "Security Warnings",
-                behavioralInsights: "Behavioral Insights",
-                close: "Close",
-                confirmationSent: "Confirmation sent successfully!",
-                serverError: "Server error occurred."
-            },
-            fr: {
-                logout: "Déconnexion",
-                welcome: "Bienvenue",
-                activateCode: "Activer le Code",
-                selectSubscription: "Sélectionner un Abonnement",
-                noSubscriptions: "Aucun abonnement disponible",
-                buyerContactPlaceholder: "Téléphone ou Email",
-                activate: "Activer",
-                activating: "Activation...",
-                copy: "Copier",
-                print: "Imprimer",
-                earnings: "Gains",
-                enterprise: "Entreprise",
-                export: "Exporter",
-                insights: "Insights & Prédictions",
-                transactions: "Transactions",
-                thId: "ID",
-                thReseller: "Revendeur",
-                thSubscription: "Abonnement",
-                thBuyerContact: "Contact Acheteur",
-                thCode: "Code",
-                thAmount: "Montant (CDF)",
-                thCommission: "Commission (CDF)",
-                thDate: "Date",
-                resellers: "Revendeurs",
-                thResellerId: "ID",
-                thName: "Nom",
-                thPhone: "Téléphone",
-                thEmail: "Email",
-                thAddress: "Adresse",
-                thStatus: "Statut",
-                thCreated: "Créé",
-                thAction: "Action",
-                approve: "Approuvé",
-                unapprove: "Non approuvé",
-                footer: "©2025 Zinbo Technologie",
-                loading: "Chargement...",
-                noData: "Aucune donnée",
-                noResellers: "Aucun revendeur",
-                success: "Code activé avec succès !",
-                logoutSuccess: "Déconnexion réussie !",
-                invalidFields: "Veuillez remplir tous les champs.",
-                invalidSubscription: "Abonnement invalide sélectionné.",
-                invalidContact: "Format d'email ou de téléphone invalide.",
-                activationFailed: "Échec de l'activation. Réessayez.",
-                emailFailed: "Échec de l'envoi de l'email.",
-                smsFailed: "Échec de l'envoi du SMS.",
-                transactionInsertFailed: "Échec de l'enregistrement de la transaction.",
-                currentCodesInsertFailed: "Échec de l'enregistrement du code.",
-                dbCleanupFailed: "Échec du nettoyage des codes expirés.",
-                codeGenerationFailed: "Échec de la génération d'un code unique.",
-                dbConnectionFailed: "Erreur serveur. Contactez-nous.",
-                emailConfigFailed: "Service email non configuré.",
-                smsConfigFailed: "Service SMS non configuré.",
-                copied: "Code copié avec succès !",
-                statusUpdated: "Statut du revendeur mis à jour !",
-                statusFailed: "Échec de la mise à jour du statut.",
-                insightsTitle: "Insights & Prédictions Commerciales",
-                growthAdvice: "Conseils de Croissance",
-                securityWarnings: "Avertissements de Sécurité",
-                behavioralInsights: "Insights Comportementaux",
-                close: "Fermer",
-                confirmationSent: "Confirmation envoyée avec succès !",
-                serverError: "Erreur serveur survenue."
-            },
-            sw: {
-                logout: "Toka",
-                welcome: "Karibu",
-                activateCode: "Washa Nambari",
-                selectSubscription: "Chagua Usajili",
-                noSubscriptions: "Hakuna usajili unaopatikana",
-                buyerContactPlaceholder: "Simu au Barua Pepe",
-                activate: "Washa",
-                activating: "Inawasha...",
-                copy: "Nakili",
-                print: "Chapa",
-                earnings: "Mapato",
-                enterprise: "Biashara",
-                export: "Hamisha",
-                insights: "Ona Maarifa",
-                transactions: "Miamala",
-                thId: "ID",
-                thReseller: "Muuzaji",
-                thSubscription: "Usajili",
-                thBuyerContact: "Mwasiliani wa Mnunuzi",
-                thCode: "Nambari",
-                thAmount: "Kiasi (CDF)",
-                thCommission: "Tume (CDF)",
-                thDate: "Tarehe",
-                resellers: "Wauzaji",
-                thResellerId: "ID",
-                thName: "Jina",
-                thPhone: "Simu",
-                thEmail: "Barua Pepe",
-                thAddress: "Anwani",
-                thStatus: "Hali",
-                thCreated: "Imeundwa",
-                thAction: "Kitendo",
-                approve: "Imeidhinishwa",
-                unapprove: "Haijaidhinishwa",
-                footer: "©2025 Teknolojia ya Zinbo",
-                loading: "Inapakia...",
-                noData: "Hakuna data bado",
-                noResellers: "Hakuna wauzaji bado",
-                success: "Nambari imewashwa vizuri!",
-                logoutSuccess: "Umetoka vizuri!",
-                invalidFields: "Tafadhali jaza sehemu zote.",
-                invalidSubscription: "Usajili batili umechaguliwa.",
-                invalidContact: "Muundo wa barua pepe au simu si sahihi.",
-                activationFailed: "Imeshindwa kuwasha nambari.",
-                emailFailed: "Imeshindwa kutuma barua pepe.",
-                smsFailed: "Imeshindwa kutuma SMS.",
-                transactionInsertFailed: "Imeshindwa kurekodi miamala.",
-                currentCodesInsertFailed: "Imeshindwa kuhifadhi nambari.",
-                dbCleanupFailed: "Imeshindwa kusafisha nambari zilizopita muda.",
-                codeGenerationFailed: "Imeshindwa kutoa nambari ya pekee.",
-                dbConnectionFailed: "Hitilafu ya seva. Wasiliana nasi.",
-                emailConfigFailed: "Huduma ya barua pepe haijasanidiwa.",
-                smsConfigFailed: "Huduma ya SMS haijasanidiwa.",
-                copied: "Nambari imenakiliwa kwenye ubao wa kunakili!",
-                statusUpdated: "Hali ya muuzaji imesasishwa!",
-                statusFailed: "Imeshindwa kusasisha hali ya muuzaji.",
-                insightsTitle: "Maarifa ya Biashara & Utabiri",
-                growthAdvice: "Ushauri wa Ukuaji",
-                securityWarnings: "Onyo za Usalama",
-                behavioralInsights: "Maarifa ya Tabia",
-                close: "Funga",
-                confirmationSent: "Uthibitisho umetumwa vizuri!",
-                serverError: "Hitilafu ya seva imetokea."
-            }
-        };
+  $('gen-plan').addEventListener('change', function () {
+    var opt = this.options[this.selectedIndex];
+    if (opt && opt.dataset.rate) $('gen-price').value = opt.dataset.rate;
+  });
 
-        let currentLang = 'en';
-        const modal = document.getElementById('modal');
-        const modalTitle = document.getElementById('modalTitle');
-        const modalMessage = document.getElementById('modalMessage');
-        const modalContent = document.getElementById('modalContent');
-        const closeModal = document.getElementById('closeModal');
-        const modalCloseBtn = document.getElementById('modalCloseBtn');
+  // ---------- Génération de lot ----------
+  $('genForm').addEventListener('submit', async function (e) {
+    e.preventDefault();
+    $('genBtn').disabled = true;
+    var payload = {
+      subscription_id: Number($('gen-plan').value),
+      quantity: Number($('gen-qty').value),
+      unit_price: $('gen-price').value,
+      note: $('gen-note').value
+    };
+    var r = await api('generate_batch', payload);
+    $('genBtn').disabled = false;
+    if (!r.ok) {
+      showMsg($('genMsg'), 'Génération impossible. Vérifiez le forfait et la quantité.', false);
+      return;
+    }
+    state.lastBatch = r.batch_id;
+    showMsg($('genMsg'), 'Lot ' + r.reference + ' : ' + r.codes.length + ' ticket(s) générés. Imprimez le PDF avant de fermer.', true);
+    $('genResult').style.display = 'flex';
+    loadBatches();
+    loadDashboard();
+  });
 
-        function showModal(title, message, content = '') {
-            modalTitle.textContent = title;
-            modalMessage.textContent = message;
-            modalContent.innerHTML = content;
-            modal.classList.remove('hidden');
-            modalCloseBtn.focus();
-        }
+  $('printBtn').onclick = async function () {
+    if (!state.lastBatch) return;
+    $('printBtn').disabled = true;
+    var r = await api('print_batch', {batch_id: state.lastBatch});
+    $('printBtn').disabled = false;
+    if (!r.success) { showMsg($('genMsg'), 'PDF impossible : les codes de ce lot ne sont pas déchiffrables (APP_KEY absente ?).', false); return; }
+    var bin = atob(r.pdf);
+    var arr = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    download(r.filename, new Blob([arr], {type: 'application/pdf'}));
+    if (r.missing) showMsg($('genMsg'), r.missing + ' ticket(s) sans code déchiffrable ont été ignorés.', false);
+  };
 
-        function hideModal() {
-            modal.classList.add('hidden');
-            modalContent.innerHTML = '';
-        }
+  $('csvBtn').onclick = async function () {
+    if (!state.lastBatch) return;
+    var r = await api('export_batch', {batch_id: state.lastBatch});
+    if (!r.success) { showMsg($('genMsg'), 'Export CSV impossible.', false); return; }
+    download(r.filename, r.csv, 'text/csv;charset=utf-8');
+  };
 
-        closeModal.addEventListener('click', hideModal);
-        modalCloseBtn.addEventListener('click', hideModal);
-        modal.addEventListener('click', (e) => {
-            if (e.target === modal) hideModal();
-        });
-        document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape' && !modal.classList.contains('hidden')) hideModal();
-        });
+  async function loadBatches() {
+    var d = await api('batches');
+    if (!d.success) return;
+    $('batches-body').innerHTML = d.batches.map(function (b) {
+      return '<tr><td>' + esc(b.reference) + '<div class="muted">' + dt(b.created_at) + '</div></td>' +
+        '<td>' + esc(b.plan_name || '—') + '</td>' +
+        '<td>' + b.tickets_count + '</td><td>' + b.tickets_used + '</td>' +
+        '<td><button class="ghost b-print" type="button" data-id="' + b.id + '">PDF</button></td></tr>';
+    }).join('') || '<tr><td colspan="5" class="muted">Aucun lot</td></tr>';
+    Array.prototype.forEach.call(document.querySelectorAll('.b-print'), function (btn) {
+      btn.onclick = async function () {
+        var r = await api('print_batch', {batch_id: Number(btn.dataset.id)});
+        if (!r.success) { alert('PDF impossible pour ce lot.'); return; }
+        var bin = atob(r.pdf), arr = new Uint8Array(bin.length);
+        for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+        download(r.filename, new Blob([arr], {type: 'application/pdf'}));
+      };
+    });
+  }
 
-        document.getElementById('languageSelect').addEventListener('change', () => {
-            currentLang = document.getElementById('languageSelect').value;
-            updateLanguage();
-            loadCharts();
-            loadTransactions();
-            loadResellers();
-        });
+  // ---------- Recherche ----------
+  async function doSearch() {
+    var q = $('searchInput').value.trim();
+    if (!q) return;
+    var d = await api('search', {q: q});
+    $('search-body').innerHTML = (d.tickets || []).map(function (t) {
+      var ident = t.code_plain ? t.code_plain : ('Ticket #' + t.id);
+      var sub = t.batch_ref ? 'Lot ' + t.batch_ref : '';
+      return '<tr><td><strong>' + esc(ident) + '</strong><div class="muted">' + esc(sub) +
+        (t.contact ? ' · ' + esc(t.contact) : '') + '</div></td>' +
+        '<td>' + esc(t.plan_name || '—') + '</td>' +
+        '<td>' + chip(t.state) + '</td>' +
+        '<td>' + (t.expires_at ? dt(t.expires_at) : '—') + '</td>' +
+        '<td>' + (t.state === 'revoked' ? '' : '<button class="danger t-revoke" type="button" data-id="' + t.id + '">Révoquer</button>') + '</td></tr>';
+    }).join('');
+    $('search-note').textContent = (d.tickets || []).length ? '' : 'Aucun ticket trouvé.';
+    bindRevoke();
+  }
+  $('searchBtn').onclick = doSearch;
+  $('searchInput').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); doSearch(); } });
 
-        function updateLanguage() {
-            document.getElementById('logoutText').textContent = translations[currentLang].logout;
-            document.getElementById('welcomeText').childNodes[0].textContent = `${translations[currentLang].welcome}, `;
-            document.getElementById('activateCodeTitle').textContent = translations[currentLang].activateCode;
-            document.getElementById('selectSubscription').textContent = translations[currentLang].selectSubscription;
-            document.getElementById('noSubscriptions')?.setAttribute('id', translations[currentLang].noSubscriptions);
-            document.getElementById('buyerContact').placeholder = translations[currentLang].buyerContactPlaceholder;
-            document.getElementById('activateBtn').textContent = translations[currentLang].activate;
-            document.getElementById('copyText').textContent = translations[currentLang].copy;
-            document.getElementById('printText').textContent = translations[currentLang].print;
-            document.getElementById('earningsTitle').textContent = translations[currentLang].earnings;
-            document.getElementById('exportEarningsText').textContent = translations[currentLang].export;
-            document.getElementById('insightsText').textContent = translations[currentLang].insights;
-            document.getElementById('transactionsTitle').textContent = translations[currentLang].transactions;
-            document.getElementById('exportTransactionsText').textContent = translations[currentLang].export;
-            document.getElementById('resellersTitle').textContent = translations[currentLang].resellers;
-            document.getElementById('exportResellersText').textContent = translations[currentLang].export;
-            document.getElementById('thId').textContent = translations[currentLang].thId;
-            document.getElementById('thReseller').textContent = translations[currentLang].thReseller;
-            document.getElementById('thSubscription').textContent = translations[currentLang].thSubscription;
-            document.getElementById('thBuyerContact').textContent = translations[currentLang].thBuyerContact;
-            document.getElementById('thCode').textContent = translations[currentLang].thCode;
-            document.getElementById('thAmount').textContent = translations[currentLang].thAmount;
-            document.getElementById('thCommission').textContent = translations[currentLang].thCommission;
-            document.getElementById('thDate').textContent = translations[currentLang].thDate;
-            document.getElementById('thResellerId').textContent = translations[currentLang].thResellerId;
-            document.getElementById('thName').textContent = translations[currentLang].thName;
-            document.getElementById('thPhone').textContent = translations[currentLang].thPhone;
-            document.getElementById('thEmail').textContent = translations[currentLang].thEmail;
-            document.getElementById('thAddress').textContent = translations[currentLang].thAddress;
-            document.getElementById('thStatus').textContent = translations[currentLang].thStatus;
-            document.getElementById('thCreated').textContent = translations[currentLang].thCreated;
-            document.getElementById('thAction').textContent = translations[currentLang].thAction;
-            document.getElementById('footerText').textContent = translations[currentLang].footer;
-            document.getElementById('modalCloseBtn').textContent = translations[currentLang].close;
-        }
+  function bindRevoke() {
+    Array.prototype.forEach.call(document.querySelectorAll('.t-revoke'), function (btn) {
+      btn.onclick = async function () {
+        var ok = await confirmBox('Révoquer ce ticket ? Il ne pourra plus être utilisé, même s\'il reste du temps.');
+        if (!ok) return;
+        var r = await api('revoke', {id: btn.dataset.id});
+        if (r.success) { btn.closest('tr').remove(); loadSessions(); }
+        else alert('Révocation impossible : ticket introuvable ou déjà révoqué.');
+      };
+    });
+  }
 
-        function performLogout() {
-            fetch('/admin.php', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF },
-                body: JSON.stringify({ action: 'logout' })
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    showModal(translations[currentLang].logoutSuccess, translations[currentLang].logoutSuccess);
-                    setTimeout(() => {
-                        window.location.href = 'reseller.php';
-                    }, 1000);
-                } else {
-                    showModal('Error', translations[currentLang].activationFailed + ': ' + data.debug);
-                }
-            })
-            .catch(error => {
-                console.error('Logout error:', error);
-                showModal('Error', translations[currentLang].serverError);
-            });
-        }
+  // ---------- Sessions ----------
+  async function loadSessions() {
+    var d = await api('sessions');
+    if (!d.success) return;
+    $('sessions-body').innerHTML = (d.sessions || []).map(function (t) {
+      var code = t.code_plain || ('#' + t.id);
+      var limit = t.data_limit_bytes ? bytes(t.data_limit_bytes) : 'illimité';
+      return '<tr><td><strong>' + esc(code) + '</strong></td>' +
+        '<td>' + esc(t.plan_name || '—') + '</td>' +
+        '<td>' + duration(t.remaining) + '</td>' +
+        '<td>' + bytes(t.bytes_used) + ' / ' + limit + '</td>' +
+        '<td><button class="danger s-revoke" type="button" data-id="' + t.id + '">Révoquer</button></td></tr>';
+    }).join('');
+    $('sessions-note').textContent = (d.sessions || []).length ? '' : 'Aucune session active.';
+    Array.prototype.forEach.call(document.querySelectorAll('.s-revoke'), function (btn) {
+      btn.onclick = async function () {
+        var ok = await confirmBox('Révoquer cette session ? Le client sera déconnecté au prochain contrôle.');
+        if (!ok) return;
+        var r = await api('revoke', {id: btn.dataset.id});
+        if (r.success) loadSessions();
+      };
+    });
+  }
 
-        document.getElementById('logoutBtn').addEventListener('click', performLogout);
+  // ---------- Revendeurs ----------
+  async function loadResellers() {
+    var d = await api('resellers');
+    if (!d.success) return;
+    $('resellers-body').innerHTML = (d.resellers || []).map(function (r) {
+      return '<tr><td>' + esc(r.name) + '<div class="muted">' + esc(r.email || '') + '</div></td>' +
+        '<td>' + esc(r.phone) + '</td>' +
+        '<td>' + r.sales + '<div class="muted">' + fc(r.commission) + '</div></td>' +
+        '<td>' + (Number(r.status) ? '<span class="chip s-active">Actif</span>' : '<span class="chip s-expired">En attente</span>') + '</td>' +
+        '<td><button class="ghost r-toggle" type="button" data-id="' + r.id + '">' + (Number(r.status) ? 'Désactiver' : 'Activer') + '</button></td></tr>';
+    }).join('') || '<tr><td colspan="5" class="muted">Aucun revendeur</td></tr>';
+    Array.prototype.forEach.call(document.querySelectorAll('.r-toggle'), function (btn) {
+      btn.onclick = async function () {
+        await api('toggle_reseller', {id: Number(btn.dataset.id)});
+        loadResellers();
+      };
+    });
+  }
 
-        let currentCode = '';
-        document.getElementById('activateBtn').addEventListener('click', () => {
-            const subscriptionId = document.getElementById('subscriptionId').value;
-            let buyerContact = document.getElementById('buyerContact').value.trim();
-            if (subscriptionId && buyerContact) {
-                const activateBtn = document.getElementById('activateBtn');
-                activateBtn.disabled = true;
-                activateBtn.textContent = translations[currentLang].activating;
-                fetch('/admin.php', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF },
-                    body: JSON.stringify({ action: 'activate_code', subscription_id: subscriptionId, buyer_contact: buyerContact })
-                })
-                .then(response => response.json())
-                .then(data => {
-                    activateBtn.disabled = false;
-                    activateBtn.textContent = translations[currentLang].activate;
-                    if (data.success) {
-                        currentCode = data.code;
-                        const content = `Code: ${currentCode}<br>Rate: ${data.rate} CDF<br>Commission: ${data.commission} CDF<br>${data.confirmation_sent}<br>Expires: ${data.expiration_date}`;
-                        showModal(translations[currentLang].success, content);
-                        document.getElementById('codeResult').classList.remove('hidden');
-                        loadCharts();
-                        loadTransactions();
-                    } else {
-                        showModal('Error', translations[currentLang][data.message] || translations[currentLang].activationFailed + ': ' + data.debug);
-                        console.error('Activation error:', data.debug);
-                    }
-                })
-                .catch(error => {
-                    console.error('Activate code error:', error);
-                    activateBtn.disabled = false;
-                    activateBtn.textContent = translations[currentLang].activate;
-                    showModal('Error', translations[currentLang].serverError);
-                });
-            } else {
-                showModal('Error', translations[currentLang].invalidFields);
-            }
-        });
+  $('resellerForm').addEventListener('submit', async function (e) {
+    e.preventDefault();
+    var r = await api('create_reseller', {
+      name: $('r-name').value, phone: $('r-phone').value,
+      email: $('r-email').value, password: $('r-pass').value
+    });
+    if (r.success) {
+      showMsg($('resellerMsg'), 'Revendeur créé.', true);
+      $('resellerForm').reset();
+      loadResellers();
+    } else {
+      showMsg($('resellerMsg'), r.message === 'alreadyExists' ? 'Ce numéro existe déjà.' : 'Vérifiez le nom, le téléphone et le mot de passe (8 caractères).', false);
+    }
+  });
 
-        document.getElementById('copyCode').addEventListener('click', () => {
-            navigator.clipboard.writeText(currentCode).then(() => {
-                showModal(translations[currentLang].copied, translations[currentLang].copied);
-            });
-        });
+  // ---------- Réglages ----------
+  async function loadSettings() {
+    var d = await api('settings');
+    if (!d.success) return;
+    $('s-name').value = d.settings.portal_name || '';
+    $('s-url').value = d.settings.portal_url || '';
+    $('s-quota').value = d.settings.starlink_quota_gb;
+    $('s-comm').value = d.settings.reseller_commission;
+    $('s-stock').value = d.settings.low_stock_threshold;
+  }
+  $('settingsForm').addEventListener('submit', async function (e) {
+    e.preventDefault();
+    var r = await api('save_settings', {
+      portal_name: $('s-name').value,
+      portal_url: $('s-url').value,
+      starlink_quota_gb: $('s-quota').value,
+      reseller_commission: $('s-comm').value,
+      low_stock_threshold: $('s-stock').value
+    });
+    showMsg($('settingsMsg'), r.success ? 'Réglages enregistrés.' : 'Enregistrement impossible.', r.success);
+  });
 
-        document.getElementById('printCode').addEventListener('click', () => {
-            const printWindow = window.open('', '_blank');
-            printWindow.document.write(`
-                <html><head><title>ZinbConnect Code</title></head><body>
-                    <h1>ZinbConnect Access Code</h1>
-                    <p><strong>Code:</strong> ${currentCode}</p>
-                    <p><strong>Admin:</strong> <?php echo htmlspecialchars($first_name); ?></p>
-                    <p><strong>Date:</strong> ${new Date().toLocaleString()}</p>
-                </body></html>
-            `);
-            printWindow.document.close();
-            printWindow.print();
-        });
+  // ---------- Sauvegarde / restauration ----------
+  $('backupBtn').onclick = async function () {
+    $('backupBtn').disabled = true;
+    var r = await api('backup_sql');
+    $('backupBtn').disabled = false;
+    if (!r.success) { showMsg($('backupMsg'), 'Sauvegarde impossible.', false); return; }
+    download(r.filename, r.sql, 'application/sql');
+    showMsg($('backupMsg'), 'Sauvegarde téléchargée : ' + r.filename, true);
+  };
 
-        function loadTransactions() {
-            const tbody = document.getElementById('transactionsBody');
-            tbody.innerHTML = `<tr><td colspan="8" class="p-2 text-center">${translations[currentLang].loading}</td></tr>`;
-            fetch('/admin.php', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF },
-                body: JSON.stringify({ action: 'get_transactions' })
-            })
-            .then(response => response.json())
-            .then(data => {
-                tbody.innerHTML = '';
-                if (data.success && data.transactions.length > 0) {
-                    data.transactions.forEach(t => {
-                        const row = document.createElement('tr');
-                        row.innerHTML = `
-                            <td class="p-2">${t.id}</td>
-                            <td class="p-2">${t.reseller}</td>
-                            <td class="p-2">${t.subscription}</td>
-                            <td class="p-2">${t.buyer_contact}</td>
-                            <td class="p-2">${t.access_code}</td>
-                            <td class="p-2">${t.amount}</td>
-                            <td class="p-2">${t.commission}</td>
-                            <td class="p-2">${new Date(t.created_at).toLocaleString()}</td>
-                        `;
-                        tbody.appendChild(row);
-                    });
-                } else {
-                    tbody.innerHTML = `<tr><td colspan="8" class="p-2 text-center">${translations[currentLang].noData}</td></tr>`;
-                }
-            })
-            .catch(error => {
-                console.error('Transaction fetch error:', error);
-                tbody.innerHTML = `<tr><td colspan="8" class="p-2 text-center">${translations[currentLang].noData}</td></tr>`;
-            });
-        }
+  $('restoreBtn').onclick = async function () {
+    var file = $('restoreFile').files[0];
+    if (!file) { showMsg($('restoreMsg'), 'Choisissez d\'abord un fichier .sql.', false); return; }
+    var ok = await confirmBox('Restaurer ' + file.name + ' ? Toutes les données actuelles seront remplacées.');
+    if (!ok) return;
+    var text = await file.text();
+    $('restoreBtn').disabled = true;
+    var r = await api('restore', {sql: text});
+    $('restoreBtn').disabled = false;
+    if (r.ok) {
+      showMsg($('restoreMsg'), 'Restauration terminée (' + r.statements + ' instructions). Sauvegarde de sécurité : ' + r.safety_file, true);
+    } else {
+      showMsg($('restoreMsg'), 'Restauration refusée ou incomplète (fichier non reconnu ?).', false);
+    }
+  };
 
-        function loadResellers() {
-            const tbody = document.getElementById('resellersBody');
-            tbody.innerHTML = `<tr><td colspan="8" class="p-2 text-center">${translations[currentLang].loading}</td></tr>`;
-            fetch('/admin.php', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF },
-                body: JSON.stringify({ action: 'get_resellers' })
-            })
-            .then(response => response.json())
-            .then(data => {
-                tbody.innerHTML = '';
-                if (data.success && data.resellers.length > 0) {
-                    data.resellers.forEach(r => {
-                        const row = document.createElement('tr');
-                        row.innerHTML = `
-                            <td class="p-2">${r.id}</td>
-                            <td class="p-2">${r.name || '-'}</td>
-                            <td class="p-2">${r.phone || '-'}</td>
-                            <td class="p-2">${r.email || '-'}</td>
-                            <td class="p-2">${r.address || '-'}</td>
-                            <td class="p-2">${r.status === 1 ? translations[currentLang].approve : translations[currentLang].unapprove}</td>
-                            <td class="p-2">${new Date(r.created_at).toLocaleString()}</td>
-                            <td class="p-2">
-                                <button class="toggle-status px-2 py-1 rounded-md text-white ${r.status === 1 ? 'bg-green-600 hover:bg-green-700' : 'bg-red-600 hover:bg-red-700'} btn" data-id="${r.id}" data-status="${r.status}">
-                                    ${r.status === 1 ? translations[currentLang].approve : translations[currentLang].unapprove}
-                                </button>
-                            </td>
-                        `;
-                        tbody.appendChild(row);
-                    });
-                    document.querySelectorAll('.toggle-status').forEach(btn => {
-                        btn.addEventListener('click', () => {
-                            const resellerId = btn.dataset.id;
-                            const newStatus = btn.dataset.status === '1' ? 0 : 1;
-                            btn.disabled = true;
-                            fetch('/admin.php', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF },
-                                body: JSON.stringify({ action: 'toggle_reseller_status', reseller_id: resellerId, new_status: newStatus })
-                            })
-                            .then(response => response.json())
-                            .then(data => {
-                                btn.disabled = false;
-                                if (data.success) {
-                                    btn.textContent = data.status === 1 ? translations[currentLang].approve : translations[currentLang].unapprove;
-                                    btn.dataset.status = data.status;
-                                    btn.classList.toggle('bg-green-600');
-                                    btn.classList.toggle('bg-red-600');
-                                    showModal(translations[currentLang].statusUpdated, translations[currentLang].statusUpdated);
-                                    loadResellers();
-                                } else {
-                                    showModal('Error', translations[currentLang].statusFailed + ': ' + data.debug);
-                                }
-                            })
-                            .catch(error => {
-                                btn.disabled = false;
-                                showModal('Error', translations[currentLang].statusFailed);
-                            });
-                        });
-                    });
-                } else {
-                    tbody.innerHTML = `<tr><td colspan="8" class="p-2 text-center">${translations[currentLang].noResellers}</td></tr>`;
-                }
-            })
-            .catch(error => {
-                console.error('Resellers fetch error:', error);
-                tbody.innerHTML = `<tr><td colspan="8" class="p-2 text-center">${translations[currentLang].noResellers}</td></tr>`;
-            });
-        }
+  // ---------- Journal ----------
+  async function loadLog() {
+    var d = await api('audit');
+    if (!d.success) return;
+    $('log-body').innerHTML = (d.events || []).map(function (e) {
+      return '<tr><td>' + dt(e.created_at) + '</td><td>' + esc(e.event) + '</td><td>' + esc(e.actor || '') +
+        '</td><td>' + esc(e.ip || '') + '</td><td class="muted">' + esc(e.details || '') + '</td></tr>';
+    }).join('') || '<tr><td colspan="5" class="muted">Journal vide</td></tr>';
+  }
 
-        let pieChart, lineChart;
-        function loadCharts() {
-            document.getElementById('personalEarnings').textContent = translations[currentLang].loading;
-            document.getElementById('enterpriseEarnings').textContent = translations[currentLang].loading;
-            fetch('/admin.php', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF },
-                body: JSON.stringify({ action: 'get_earnings_data' })
-            })
-            .then(response => response.json())
-            .then(data => {
-                document.getElementById('personalEarnings').textContent = `${data.personal_earnings || 0} CDF`;
-                document.getElementById('enterpriseEarnings').textContent = `${data.global_earnings || 0} CDF (${translations[currentLang].enterprise})`;
-                if (data.success) {
-                    if (pieChart) pieChart.destroy();
-                    const pieCtx = document.getElementById('pieChart').getContext('2d');
-                    pieChart = new Chart(pieCtx, {
-                        type: 'pie',
-                        data: {
-                            labels: data.pie_data.labels,
-                            datasets: [{
-                                data: data.pie_data.data,
-                                backgroundColor: ['#a78bfa', '#d8b4fe', '#f3e8ff', '#6b7280']
-                            }]
-                        },
-                        options: {
-                            responsive: true,
-                            plugins: { legend: { position: 'top' } }
-                        }
-                    });
+  $('logoutBtn').onclick = async function () {
+    await api('logout');
+    location.href = 'reseller.php';
+  };
 
-                    if (lineChart) lineChart.destroy();
-                    const lineCtx = document.getElementById('lineChart').getContext('2d');
-                    lineChart = new Chart(lineCtx, {
-                        type: 'line',
-                        data: {
-                            labels: data.line_data.labels,
-                            datasets: [{
-                                label: translations[currentLang].enterprise,
-                                data: data.line_data.data,
-                                borderColor: '#a78bfa',
-                                fill: false
-                            }]
-                        },
-                        options: {
-                            responsive: true,
-                            scales: { y: { beginAtZero: true } }
-                        }
-                    });
-                }
-            })
-            .catch(error => {
-                console.error('Charts fetch error:', error);
-                document.getElementById('personalEarnings').textContent = '0 CDF';
-                document.getElementById('enterpriseEarnings').textContent = `0 CDF (${translations[currentLang].enterprise})`;
-            });
-        }
-
-        function linearRegression(x, y) {
-            const n = x.length;
-            let sumX = 0, sumY = 0, sumXY = 0, sumXX = 0;
-            for (let i = 0; i < n; i++) {
-                sumX += x[i];
-                sumY += y[i];
-                sumXY += x[i] * y[i];
-                sumXX += x[i] * x[i];
-            }
-            const slope = (n * sumXY - sumX * sumY) / (n * sumXX - sumX * sumX);
-            const intercept = (sumY - slope * sumX) / n;
-            return { slope, intercept };
-        }
-
-        function predictFuture(data) {
-            if (!data.line_data.labels.length) return { predictions: [], advice: [], warnings: [], behaviors: [] };
-            const x = data.line_data.labels.map((_, i) => i);
-            const y = data.line_data.data.map(Number);
-            const { slope, intercept } = linearRegression(x, y);
-            const predictions = [];
-            for (let i = x.length; i < x.length + 30; i++) {
-                predictions.push(Math.max(0, slope * i + intercept));
-            }
-            const growthRate = slope > 0 ? (slope / y[y.length - 1] * 100).toFixed(2) : 0;
-            const advice = [
-                growthRate > 0 ? `${translations[currentLang].growthAdvice}: ${growthRate}%` : translations[currentLang].noData,
-                translations[currentLang].noData
-            ];
-            const warnings = [];
-            const buyerContacts = data.transactions?.map(t => t.buyer_contact) || [];
-            const contactCounts = buyerContacts.reduce((acc, c) => ({ ...acc, [c]: (acc[c] || 0) + 1 }), {});
-            for (const [contact, count] of Object.entries(contactCounts)) {
-                if (count > 3) warnings.push(`Multiple transactions (${count}) from ${contact}.`);
-            }
-            const behaviors = [];
-            const hours = data.transactions?.map(t => new Date(t.created_at).getHours()) || [];
-            const peakHour = hours.sort((a, b) => hours.filter(v => v === b).length - hours.filter(v => v === a).length)[0];
-            if (peakHour) behaviors.push(`Peak transaction time: ${peakHour} - ${peakHour + 1} ${translations[currentLang].hours}`);
-return { predictions, advice, warnings, behaviors };
-}
-
-document.getElementById('viewInsights').addEventListener('click', () => {
-fetch('/admin.php', {
-method: 'POST',            headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF },
-body: JSON.stringify({ action: 'get_earnings_data' })
-})
-.then(response => response.json())
-.then(data => {
-if (data.success) {
-const { predictions, advice, warnings, behaviors } = predictFuture(data);
-const content = `
-
-${translations[currentLang].growthAdvice}
-${advice.map(a => `
-${a}
-`).join('')}
-${translations[currentLang].securityWarnings}
-${warnings.length ? warnings.map(w => `
-${w}
-`).join('') : `
-${translations[currentLang].noData}
-`}
-${translations[currentLang].behavioralInsights}
-${behaviors.length ? behaviors.map(b => `
-${b}
-`).join('') : `
-${translations[currentLang].noData}
-`}
-`; showModal(translations[currentLang].insightsTitle, '', content); } else { showModal('Error', translations[currentLang].activationFailed + ': ' + data.debug); } }) .catch(error => { console.error('Insights fetch error:', error); showModal('Error', translations[currentLang].serverError); }); });
-function exportToCSV(data, filename, headers, labels) {
-const csv = [
-headers.join(','),
-...data.map(row => Object.values(row).map(val => "${val}").join(','))
-].join('\n');
-const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-const link = document.createElement('a');
-link.href = URL.createObjectURL(blob);
-link.download = filename;
-link.click();
-}
-
-document.getElementById('exportTransactions').addEventListener('click', () => {
-fetch('/admin.php', {
-method: 'POST',            headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF },
-body: JSON.stringify({ action: 'get_transactions' })
-})
-.then(response => response.json())
-.then(data => {
-if (data.success && data.transactions.length > 0) {
-exportToCSV(
-data.transactions,
-'transactions.csv',
-[
-translations[currentLang].thId,
-translations[currentLang].thReseller,
-translations[currentLang].thSubscription,
-translations[currentLang].thBuyerContact,
-translations[currentLang].thCode,
-translations[currentLang].thAmount,
-translations[currentLang].thCommission,
-translations[currentLang].thDate
-]
-);
-} else {
-showModal('Error', translations[currentLang].noData);
-}
-})
-.catch(error => {
-console.error('Export transactions error:', error);
-showModal('Error', translations[currentLang].serverError);
-});
-});
-
-document.getElementById('exportResellers').addEventListener('click', () => {
-fetch('/admin.php', {
-method: 'POST',            headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF },
-body: JSON.stringify({ action: 'get_resellers' })
-})
-.then(response => response.json())
-.then(data => {
-if (data.success && data.resellers.length > 0) {
-exportToCSV(
-data.resellers,
-'resellers.csv',
-[
-translations[currentLang].thResellerId,
-translations[currentLang].thName,
-translations[currentLang].thPhone,
-translations[currentLang].thEmail,
-translations[currentLang].thAddress,
-translations[currentLang].thStatus,
-translations[currentLang].thCreated
-]
-);
-} else {
-showModal('Error', translations[currentLang].noResellers);
-}
-})
-.catch(error => {
-console.error('Export resellers error:', error);
-showModal('Error', translations[currentLang].serverError);
-});
-});
-
-document.getElementById('exportEarnings').addEventListener('click', () => {
-fetch('/admin.php', {
-method: 'POST',            headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF },
-body: JSON.stringify({ action: 'get_earnings_data' })
-})
-.then(response => response.json())
-.then(data => {
-if (data.success) {
-const earningsData = [
-{
-Type: translations[currentLang].earnings,
-Amount: data.personal_earnings || 0,
-Currency: 'CDF'
-},
-{
-Type: translations[currentLang].enterprise,
-Amount: data.global_earnings || 0,
-Currency: 'CDF'
-}
-];
-exportToCSV(
-earningsData,
-'earnings.csv',
-['Type', 'Amount', 'Currency']
-);
-} else {
-showModal('Error', translations[currentLang].noData);
-}
-})
-.catch(error => {
-console.error('Export earnings error:', error);
-showModal('Error', translations[currentLang].serverError);
-});
-});
-
-document.addEventListener('DOMContentLoaded', () => {
-updateLanguage();
-loadCharts();
-loadTransactions();
-loadResellers();
-});
+  loadDashboard();
+})();
 </script>
 </body>
 </html>

@@ -9,6 +9,7 @@
 declare(strict_types=1);
 
 require_once __DIR__ . '/lib/security.php';
+require_once __DIR__ . '/lib/tickets.php';
 
 security_headers();
 session_boot();
@@ -42,9 +43,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             json_out(['success' => true, 'message' => 'Logged out successfully']);
 
         case 'activate_code':
-            $subscriptionId = (int)($input['subscription_id'] ?? 0);
-            $buyerContact   = trim((string)($input['buyer_contact'] ?? ''));
-            if ($subscriptionId <= 0 || $buyerContact === '') {
+            // Phase 3 : le revendeur active un ticket imprimé (et non plus un code tiré du stock).
+            $code         = normalize_code((string)($input['code'] ?? ''));
+            $buyerContact = trim((string)($input['buyer_contact'] ?? ''));
+            if ($code === '') {
                 json_out(['success' => false, 'message' => 'invalidFields']);
             }
 
@@ -52,30 +54,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 json_out(['success' => false, 'message' => 'tooManyAttempts']);
             }
 
-            $result = activate_code_for_subscriber($subscriptionId, $buyerContact);
+            $result = activate_ticket($code, $buyerContact !== '' ? $buyerContact : null, $reseller_id);
             if (!$result['ok']) {
-                audit('activate_failed', 'reseller:' . $reseller_id, $result['error']);
+                audit('activate_failed', 'reseller:' . $reseller_id, (string)$result['error']);
                 json_out(['success' => false, 'message' => $result['error']]);
             }
 
-            // Transaction commerciale (commission de 25 %, inchangée)
-            $commission = round(((float)$result['rate']) * 0.25, 2);
-            try {
-                db()->prepare('INSERT INTO transactions (reseller_id, subscription_id, buyer_contact, access_code, amount, commission, created_at) VALUES (?,?,?,?,?,?,?)')
-                    ->execute([$reseller_id, $subscriptionId, $result['contact'], $result['code'], $result['rate'], $commission, date('Y-m-d H:i:s')]);
-            } catch (Throwable $e) {
-                audit('transaction_insert_error', 'reseller:' . $reseller_id, $e->getMessage());
-            }
+            // La vente (montant + commission) est enregistrée dans activate_ticket().
+            $commission = round(((float)$result['ticket']['price']) * ((float)(setting('reseller_commission') ?? '25')) / 100, 2);
 
             json_out([
                 'success'           => true,
-                'code'              => $result['code'],
-                'rate'              => $result['rate'],
+                'code'              => $result['ticket']['code_plain'] ?? $code,
+                'rate'              => $result['ticket']['price'],
                 'commission'        => $commission,
-                'contact_type'      => $result['contactType'],
-                'buyer_contact'     => $result['contact'],
-                'subscription_name' => $result['name'],
-                'expiration_date'   => $result['expiry'],
+                'contact_type'      => $result['ticket']['contact_type'] ?? null,
+                'buyer_contact'     => $result['ticket']['contact'] ?? '—',
+                'subscription_name' => $result['plan']['name'] ?? '',
+                'expiration_date'   => $result['expires_at'],
             ]);
 
         case 'get_transactions':
@@ -255,7 +251,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         }
                         ?>
                     </select>
-                    <input id="buyerContact" type="text" class="w-full p-2 border rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 text-opacity-100" placeholder="Phone or Email" required>
+                    <input id="ticketCode" type="text" class="w-full p-2 border rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 font-mono uppercase tracking-widest" placeholder="Code du ticket (12 caracteres)" autocomplete="off" required>
+                    <input id="buyerContact" type="text" class="w-full p-2 border rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 text-opacity-100" placeholder="Phone or Email (facultatif)">
                     <button id="activateBtn" class="w-full p-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 btn">Activate</button>
                 </div>
                 <div id="codeResult" class="mt-4 hidden">
@@ -590,8 +587,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         document.getElementById('activateBtn').addEventListener('click', () => {
             const subscriptionId = document.getElementById('subscriptionId').value;
+            const ticketCode = document.getElementById('ticketCode').value.toUpperCase().replace(/[\s\-_]/g, '');
             let buyerContact = document.getElementById('buyerContact').value.trim();
-            if (!subscriptionId || !buyerContact) {
+            if (!subscriptionId || !ticketCode) {
                 showModal('Error', translations[currentLang].invalidFields);
                 return;
             }
@@ -601,11 +599,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (!buyerContact.match(/^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$/) && !buyerContact.match(/^\+\d/)) {
                 buyerContact = '+243' + buyerContact.replace(/^0+/, '');
             }
-            console.debug(`Sending activation request: subscription_id=${subscriptionId}, buyer_contact=${buyerContact}`);
             fetch('', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF },
-                body: JSON.stringify({ action: 'activate_code', subscription_id: parseInt(subscriptionId), buyer_contact: buyerContact })
+                body: JSON.stringify({ action: 'activate_code', subscription_id: parseInt(subscriptionId), code: ticketCode, buyer_contact: buyerContact })
             })
             .then(response => {
                 console.debug('Activate code response status:', response.status);
@@ -628,10 +625,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         console.error('Error loading charts/transactions:', error);
                     });
                 } else {
-                    showModal('Error', translations[currentLang][data.message] || translations[currentLang].activationFailed);
-                    if (data.debug) {
-                        console.error('Activation debug info:', data.debug);
-                    }
+                    const errMap = {
+                        invalid: 'Code introuvable. Verifiez les caracteres (pas de 0, O, 1, I, l).',
+                        alreadyUsed: 'Ce code est deja active.',
+                        expired: 'Ce code a expire.',
+                        revoked: 'Ce code a ete revoque.',
+                        used: 'Plafond de donnees atteint.',
+                        tooManyAttempts: 'Trop d activations recentes. Attendez quelques minutes.'
+                    };
+                    showModal('Error', errMap[data.message] || translations[currentLang][data.message] || translations[currentLang].activationFailed);
                 }
             })
             .catch(error => {
