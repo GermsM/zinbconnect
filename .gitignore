@@ -1,1 +1,7 @@
 tools/
+
+# Environnement local (secrets) et données
+.env
+data/
+backups/
+*.log
