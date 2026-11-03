@@ -1,59 +1,59 @@
 <?php
-session_start();
-define('DB_HOST', 'sql307.infinityfree.com');
-define('DB_USER', 'if0_39009379');
-define('DB_PASS', 'Malinga7');
-define('DB_NAME', 'if0_39009379_zinbconnect');
-define('DB_PORT', 3306);
+/**
+ * Zinbconnect — Inscription revendeur (Phase 2 : sécurité renforcée)
+ * - Configuration via .env, base PDO préparée, mot de passe obligatoirement haché
+ * - CSRF, limitation de débit (5 inscriptions / heure / IP), journal d'audit
+ * Remarque : cette inscription publique sera retirée en Phase 3 (cas Kitutu :
+ * un seul admin), elle est sécurisée en attendant la simplification.
+ */
+declare(strict_types=1);
 
-function getDBConnection() {
-    $conn = new mysqli(DB_HOST, DB_USER, DB_PASS, DB_NAME, DB_PORT);
-    if ($conn->connect_error) {
-        die(json_encode(['success' => false, 'message' => 'Database connection failed']));
-    }
-    return $conn;
-}
+require_once __DIR__ . '/lib/security.php';
+
+security_headers();
+session_boot();
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    header('Content-Type: application/json');
-    $input = json_decode(file_get_contents('php://input'), true);
-    $name = $input['name'] ?? '';
-    $phone = $input['phone'] ?? '';
-    $email = $input['email'] ?? null;
-    $address = $input['address'] ?? '';
-    $password = $input['password'] ?? '';
-    
-    if ($name && $phone && $address && $password) {
-        $conn = getDBConnection();
-        $query = "SELECT id FROM resellers WHERE phone = ?";
-        $stmt = $conn->prepare($query);
-        $stmt->bind_param('s', $phone);
-        $stmt->execute();
-        $result = $stmt->get_result();
-        
-        if ($result->num_rows > 0) {
-            echo json_encode(['success' => false, 'message' => 'Phone already registered']);
-            $stmt->close();
-            $conn->close();
-            exit;
-        }
-        $stmt->close();
-        
-        $hashed_password = password_hash($password, PASSWORD_DEFAULT);
-        $query = "INSERT INTO resellers (name, phone, email, address, password, status, created_at) VALUES (?, ?, ?, ?, ?, FALSE, NOW())";
-        $stmt = $conn->prepare($query);
-        $stmt->bind_param('sssss', $name, $phone, $email, $address, $hashed_password);
-        if ($stmt->execute()) {
-            echo json_encode(['success' => true]);
-        } else {
-            echo json_encode(['success' => false, 'message' => 'Registration failed']);
-        }
-        $stmt->close();
-        $conn->close();
-    } else {
-        echo json_encode(['success' => false, 'message' => 'Missing required fields']);
+    $input = json_input();
+    csrf_require($input);
+
+    $name     = trim((string)($input['name'] ?? ''));
+    $phone    = trim((string)($input['phone'] ?? ''));
+    $email    = trim((string)($input['email'] ?? '')) ?: null;
+    $address  = trim((string)($input['address'] ?? ''));
+    $password = (string)($input['password'] ?? '');
+
+    if ($name === '' || $phone === '' || $address === '' || $password === '') {
+        json_out(['success' => false, 'message' => 'missingFields']);
     }
-    exit;
+    if (!preg_match('/^[+0-9]{7,16}$/', $phone)) {
+        json_out(['success' => false, 'message' => 'missingFields']); // format de téléphone invalide
+    }
+    if (strlen($password) < 10) {
+        json_out(['success' => false, 'message' => 'weakPassword']);
+    }
+
+    // Limitation de débit : 5 inscriptions / heure / IP
+    if (!rate_limit_check('signup_ip', client_ip(), 5, 3600)) {
+        audit('signup_ratelimited', null, 'ip=' . client_ip());
+        json_out(['success' => false, 'message' => 'tooManyAttempts', 'wait' => rate_limit_remaining('signup_ip', client_ip(), 5, 3600)]);
+    }
+
+    try {
+        $db = db();
+        $stmt = $db->prepare('SELECT id FROM resellers WHERE phone = ?');
+        $stmt->execute([$phone]);
+        if ($stmt->fetch()) {
+            json_out(['success' => false, 'message' => 'phoneRegistered']);
+        }
+        $stmt = $db->prepare('INSERT INTO resellers (name, phone, email, address, password, status, created_at) VALUES (?,?,?,?,?,0,?)');
+        $stmt->execute([$name, $phone, $email, $address, password_hash($password, PASSWORD_DEFAULT), date('Y-m-d H:i:s')]);
+        audit('reseller_signup', $name, 'téléphone=' . substr($phone, 0, 4) . '…');
+        json_out(['success' => true]);
+    } catch (Throwable $e) {
+        audit('signup_error', null, $e->getMessage());
+        json_out(['success' => false, 'message' => 'registrationFailed']);
+    }
 }
 ?>
 
@@ -63,6 +63,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ZinbConnect - Reseller Signup</title>
+    <meta name="csrf-token" content="<?php echo html(csrf_token()); ?>">
     <link rel="icon" type="image/x-icon" href="download.png">
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
     <script src="https://cdn.tailwindcss.com"></script>
@@ -217,6 +218,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 phoneRegistered: "Phone number already registered.",
                 registrationFailed: "Registration failed. Please try again.",
                 missingFields: "Please fill in all required fields.",
+                weakPassword: "Password must be at least 10 characters.",
+                tooManyAttempts: "Too many attempts. Retry in {min} minute(s).",
+                csrfInvalid: "Security check failed. Reload the page and retry.",
                 signupSuccess: "Account created successfully! Please wait for admin approval."
             },
             fr: {
@@ -236,6 +240,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 phoneRegistered: "Numéro de téléphone déjà enregistré.",
                 registrationFailed: "Échec de l'inscription. Veuillez réessayer.",
                 missingFields: "Veuillez remplir tous les champs obligatoires.",
+                weakPassword: "Le mot de passe doit contenir au moins 10 caractères.",
+                tooManyAttempts: "Trop de tentatives. Réessayez dans {min} minute(s).",
+                csrfInvalid: "Vérification de sécurité échouée. Rechargez la page puis réessayez.",
                 signupSuccess: "Compte créé avec succès ! Veuillez attendre l'approbation de l'admin."
             },
             sw: {
@@ -255,6 +262,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 phoneRegistered: "Nambari ya simu tayari imesajiliwa.",
                 registrationFailed: "Usajili umeshindwa. Tafadhali jaribu tena.",
                 missingFields: "Tafadhali jaza sehemu zote za lazima.",
+                weakPassword: "Nenosiri liwe na angalau herufi 10.",
+                tooManyAttempts: "Jaribio nyingi sana. Jaribu tena baada ya dakika {min}.",
+                csrfInvalid: "Ukaguzi wa usalama umeshindikana. Pakia upya ukurasa kisha ujaribu tena.",
                 signupSuccess: "Akaunti imefunguliwa kwa mafanikio! Tafadhali subiri idhini ya admin."
             }
         };
@@ -308,6 +318,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         document.getElementById('closeLegalModal').addEventListener('click', () => {
             legalModal.classList.add('hidden');
         });
+        // Jeton CSRF exposé par la page (une seule lecture)
+        const CSRF = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+
         document.getElementById('signupBtn').addEventListener('click', () => {
             const name = document.getElementById('name').value.trim();
             const phone = document.getElementById('phone').value.trim();
@@ -317,7 +330,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (name && phone && address && password) {
                 fetch('', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF },
                     body: JSON.stringify({ name, phone, email, address, password })
                 })
                 .then(response => response.json())
@@ -327,10 +340,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         notification.classList.remove('hidden', 'text-red-500');
                         notification.classList.add('text-green-500');
                         setTimeout(() => {
-                            window.location.href = 'reseller_login.php';
+                            window.location.href = 'reseller.php';
                         }, 2000);
                     } else {
-                        notification.textContent = translations[currentLang][data.message === 'Phone already registered' ? 'phoneRegistered' : data.message === 'Registration failed' ? 'registrationFailed' : 'missingFields'];
+                        const map = {
+                            'phoneRegistered': 'phoneRegistered',
+                            'registrationFailed': 'registrationFailed',
+                            'weakPassword': 'weakPassword',
+                            'tooManyAttempts': 'tooManyAttempts',
+                            'csrfInvalid': 'csrfInvalid'
+                        };
+                        let key = map[data.message] || 'missingFields';
+                        let text = translations[currentLang][key];
+                        if (data.message === 'tooManyAttempts') {
+                            const min = Math.max(1, Math.ceil((data.wait || 60) / 60));
+                            text = text.replace('{min}', min);
+                        }
+                        notification.textContent = text;
                         notification.classList.remove('hidden', 'text-green-500');
                         notification.classList.add('text-red-500');
                     }

@@ -1,79 +1,42 @@
 <?php
-session_start();
-define('DB_HOST', 'sql307.infinityfree.com');
-define('DB_USER', 'if0_39009379');
-define('DB_PASS', 'Malinga7');
-define('DB_NAME', 'if0_39009379_zinbconnect');
-define('DB_PORT', 3306);
+/**
+ * Zinbconnect — Connexion administrateur / revendeur (Phase 2 : sécurité renforcée)
+ * - Configuration via .env uniquement (plus aucun identifiant en dur)
+ * - PDO préparé ; mots de passe admin hachés Argon2id (l'ancien en clair est migré à la 1re connexion)
+ * - Anti-brute-force : 5 essais / 15 min par IP ET par identifiant
+ * - Jeton CSRF de session ; sessions régénérées à la connexion ; 2FA TOTP optionnelle ; journal d'audit
+ */
+declare(strict_types=1);
 
-function getDBConnection() {
-    $conn = new mysqli(DB_HOST, DB_USER, DB_PASS, DB_NAME, DB_PORT);
-    if ($conn->connect_error) {
-        die(json_encode(['success' => false, 'message' => 'Database connection failed']));
-    }
-    return $conn;
-}
+require_once __DIR__ . '/lib/security.php';
+
+security_headers();
+session_boot();
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    header('Content-Type: application/json');
-    $input = json_decode(file_get_contents('php://input'), true);
-    $contact = $input['contact'] ?? '';
-    $password = $input['password'] ?? '';
-    
-    if ($contact && $password) {
-        $conn = getDBConnection();
-        
-        // Check admins table first (plain-text passwords)
-        $query = "SELECT id, password FROM admins WHERE phone = ? OR email = ?";
-        $stmt = $conn->prepare($query);
-        $stmt->bind_param('ss', $contact, $contact);
-        $stmt->execute();
-        $result = $stmt->get_result();
-        
-        if ($result->num_rows > 0) {
-            $row = $result->fetch_assoc();
-            if ($password === $row['password']) {
-                $_SESSION['admin_id'] = $row['id'];
-                setcookie('admin_id', $row['id'], time() + 86400 * 30, '/', '', false, true);
-                echo json_encode(['success' => true, 'user_type' => 'admin.php']);
-            } else {
-                echo json_encode(['success' => false, 'message' => 'Invalid credentials']);
-            }
-            $stmt->close();
-            $conn->close();
-            exit;
-        }
-        $stmt->close();
-        
-        // Check resellers table (hashed passwords)
-        $query = "SELECT id, password, status FROM resellers WHERE phone = ? OR email = ?";
-        $stmt = $conn->prepare($query);
-        $stmt->bind_param('ss', $contact, $contact);
-        $stmt->execute();
-        $result = $stmt->get_result();
-        
-        if ($result->num_rows > 0) {
-            $row = $result->fetch_assoc();
-            if (password_verify($password, $row['password'])) {
-                if ($row['status']) {
-                    $_SESSION['reseller_id'] = $row['id'];
-                    setcookie('reseller_id', $row['id'], time() + 86400 * 30, '/', '', false, true);
-                    echo json_encode(['success' => true, 'user_type' => 'dashboard.php']);
-                } else {
-                    echo json_encode(['success' => false, 'message' => 'Pending admin approval']);
-                }
-            } else {
-                echo json_encode(['success' => false, 'message' => 'Invalid credentials']);
-            }
-        } else {
-            echo json_encode(['success' => false, 'message' => 'Invalid credentials']);
-        }
-        $stmt->close();
-        $conn->close();
-    } else {
-        echo json_encode(['success' => false, 'message' => 'Missing fields']);
+    $input    = json_input();
+    csrf_require($input);
+
+    $contact  = trim((string)($input['contact'] ?? ''));
+    $password = (string)($input['password'] ?? '');
+    $totp     = isset($input['totp']) ? preg_replace('/\D+/', '', (string)$input['totp']) : null;
+
+    $result = attempt_login($contact, $password, $totp);
+
+    if ($result['ok']) {
+        // Le cookie "30 jours" (admin_id / reseller_id) est supprimé :
+        // la session PHP régénérée est la seule preuve d'accès, révocable côté serveur.
+        setcookie('admin_id',   '', ['expires' => time() - 3600, 'path' => '/', 'httponly' => true, 'samesite' => 'Lax']);
+        setcookie('reseller_id','', ['expires' => time() - 3600, 'path' => '/', 'httponly' => true, 'samesite' => 'Lax']);
+        json_out(['success' => true, 'user_type' => $result['user_type']]);
     }
-    exit;
+
+    json_out([
+        'success'      => false,
+        'message'      => $result['message'] ?? 'invalidCredentials',
+        'wait'         => (int)($result['wait'] ?? 0),
+        'totpRequired' => !empty($result['totpRequired']),
+    ]);
 }
 ?>
 
@@ -81,8 +44,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" gioc-content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ZinbConnect - Login</title>
+    <meta name="csrf-token" content="<?php echo html(csrf_token()); ?>">
     <link rel="icon" type="image/x-icon" href="download.png">
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
     <script src="https://cdn.tailwindcss.com"></script>
@@ -178,6 +142,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             <div id="loginFormContainer" class="space-y-4">
                 <input id="contact" type="text" placeholder="Enter Phone or Email" class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 rounded-md bg-white text-gray-900" required>
                 <input id="password" type="password" placeholder="Enter Password" class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100" required>
+                <input id="totp" type="text" inputmode="numeric" maxlength="6" placeholder="2FA code (optional)" class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100">
                 <button id="loginBtn" class="w-full px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 transition">Log In</button>
             </div>
             <p id="notification" class="mt-4 text-red-500 hidden"></p>
@@ -243,7 +208,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 pendingApproval: "Your account is pending admin approval. Please contact the administrator to start selling access codes.",
                 approvalTitle: "Pending Approval",
                 adminLoginSuccess: "Logged in as Admin. Redirecting to admin dashboard...",
-                resellerLoginSuccess: "Logged in as Reseller. Redirecting to dashboard..."
+                resellerLoginSuccess: "Logged in as Reseller. Redirecting to dashboard...",
+                tooManyAttempts: "Too many attempts. Retry in {min} minute(s).",
+                totpRequired: "Enter the 6-digit code from your authenticator app.",
+                csrfInvalid: "Security check failed. Reload the page and retry."
             },
             fr: {
                 welcome: "Connectez-vous pour commencer à gérer les codes d'accès.",
@@ -261,7 +229,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 pendingApproval: "Votre compte est en attente d'approbation. Veuillez contacter l'administrateur pour commencer à vendre des codes d'accès.",
                 approvalTitle: "En attente d'approbation",
                 adminLoginSuccess: "Connecté en tant qu'Admin. Redirection vers le tableau de bord admin...",
-                resellerLoginSuccess: "Connecté en tant que Revendeur. Redirection vers le tableau de bord..."
+                resellerLoginSuccess: "Connecté en tant que Revendeur. Redirection vers le tableau de bord...",
+                tooManyAttempts: "Trop de tentatives. Réessayez dans {min} minute(s).",
+                totpRequired: "Saisissez le code à 6 chiffres de votre application d'authentification.",
+                csrfInvalid: "Vérification de sécurité échouée. Rechargez la page puis réessayez."
             },
             sw: {
                 welcome: "Ingia ili uanze kupata nambari za upatikanaji.",
@@ -279,7 +250,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 pendingApproval: "Akaunti yako inasubiri idhini ya admin. Tafadhali wasiliana na msimamizi ili uanze kuuza nambari za upatikanaji.",
                 approvalTitle: "Inasubiri Idhini",
                 adminLoginSuccess: "Umeingia kama Admin. Inaelekeza kwenye dashibodi ya admin...",
-                resellerLoginSuccess: "Umeingia kama Muuzaji. Inaelekeza kwenye dashibodi..."
+                resellerLoginSuccess: "Umeingia kama Muuzaji. Inaelekeza kwenye dashibodi...",
+                tooManyAttempts: "Jaribio nyingi sana. Jaribu tena baada ya dakika {min}.",
+                totpRequired: "Ingiza nambari ya 6 kutoka kwenye programu yako ya uthibitishaji.",
+                csrfInvalid: "Ukaguzi wa usalama umeshindikana. Pakia upya ukurasa kisha ujaribu tena."
             }
         };
 
@@ -347,14 +321,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             approvalModal.classList.add('hidden');
         });
 
+        // Jeton CSRF exposé par la page (une seule lecture)
+        const CSRF = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+
         document.getElementById('loginBtn').addEventListener('click', () => {
             const contact = document.getElementById('contact').value.trim();
             const password = document.getElementById('password').value;
+            const totpEl = document.getElementById('totp');
+            const totp = totpEl ? totpEl.value.trim() : '';
             if (contact && password) {
                 fetch('', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ contact, password })
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF },
+                    body: JSON.stringify({ contact, password, totp })
                 })
                 .then(response => response.json())
                 .then(data => {
@@ -364,12 +343,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         notification.classList.add('text-green-500');
                         setTimeout(() => {
                             window.location.href = data.user_type;
-                        }, 2000);
+                        }, 800);
                     } else {
-                        if (data.message === 'Pending admin approval') {
-                            approvalModal.classList.remove('hidden');
-                        } else {
-                            notification.textContent = translations[currentLang][data.message === 'Invalid credentials' ? 'invalidCredentials' : 'missingFields'];
+                        let msg;
+                        switch (data.message) {
+                            case 'pendingApproval':
+                                approvalModal.classList.remove('hidden');
+                                break;
+                            case 'tooManyAttempts': {
+                                const min = Math.max(1, Math.ceil((data.wait || 60) / 60));
+                                msg = translations[currentLang].tooManyAttempts.replace('{min}', min);
+                                break;
+                            }
+                            case 'totpRequired':
+                                msg = translations[currentLang].totpRequired;
+                                break;
+                            case 'csrfInvalid':
+                                msg = translations[currentLang].csrfInvalid;
+                                break;
+                            case 'missingFields':
+                                msg = translations[currentLang].missingFields;
+                                break;
+                            default:
+                                msg = translations[currentLang].invalidCredentials;
+                        }
+                        if (msg) {
+                            notification.textContent = msg;
                             notification.classList.remove('hidden', 'text-green-500');
                             notification.classList.add('text-red-500');
                         }
