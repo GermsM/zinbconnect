@@ -1,576 +1,158 @@
 <?php
-// Log script start
-file_put_contents(__DIR__ . '/debug.log', '[' . date('Y-m-d H:i:s') . '] [INFO] Script execution started' . PHP_EOL, FILE_APPEND);
+/**
+ * Zinbconnect — Console administrateur (Phase 2 : sécurisé)
+ * - Session obligatoire + re-vérification de l'admin en base (PDO préparé)
+ * - Jeton CSRF exigé sur toutes les actions POST
+ * - Codes générés avec random_bytes, sans caractères ambigus (0/O, 1/I/l exclus),
+ *   12 caractères = 60 bits d'entropie ; consommation/insertion atomique
+ * - Anciennes dépendances supprimées : PHPMailer/Twilio n'existaient pas dans le
+ *   dépôt et bloquaient complètement cette page. Les envois d'e-mail/SMS seront
+ *   réintroduits proprement (configurés par .env) en phase 3.
+ */
+declare(strict_types=1);
 
-// Set error handling
-ini_set('display_errors', 0); // Disable display errors for production
-ini_set('log_errors', 1); // Enable error logging
-ini_set('error_log', __DIR__ . '/php_errors.log'); // Custom error log
-error_reporting(E_ALL);
-ini_set('memory_limit', '128M'); // Increase memory limit for InfinityFree
+require_once __DIR__ . '/lib/security.php';
 
-// Log PHP version and key modules
-$php_version = PHP_VERSION;
-$required_modules = ['mysqli', 'curl', 'openssl', 'json', 'mbstring'];
-$loaded_modules = get_loaded_extensions();
-$missing_modules = array_diff($required_modules, $loaded_modules);
-file_put_contents(__DIR__ . '/debug.log', '[' . date('Y-m-d H:i:s') . '] [INFO] PHP Version: ' . $php_version . PHP_EOL, FILE_APPEND);
-if (!empty($missing_modules)) {
-    file_put_contents(__DIR__ . '/debug.log', '[' . date('Y-m-d H:i:s') . '] [ERROR] Missing PHP modules: ' . implode(', ', $missing_modules) . PHP_EOL, FILE_APPEND);
-    die(json_encode(['success' => false, 'message' => 'serverError', 'debug' => 'Missing PHP modules: ' . implode(', ', $missing_modules)]));
-}
+security_headers();
+session_boot();
 
-// Start session
-try {
-    if (!session_start()) {
-        throw new Exception('Session start failed');
-    }
-    file_put_contents(__DIR__ . '/debug.log', '[' . date('Y-m-d H:i:s') . '] [INFO] Session started successfully' . PHP_EOL, FILE_APPEND);
-} catch (Exception $e) {
-    file_put_contents(__DIR__ . '/debug.log', '[' . date('Y-m-d H:i:s') . '] [ERROR] Session error: ' . $e->getMessage() . PHP_EOL, FILE_APPEND);
-    die(json_encode(['success' => false, 'message' => 'serverError', 'debug' => 'Session error: ' . $e->getMessage()]));
-}
-
-// Define PHPMailer and Twilio credentials
-define('GMAIL_USERNAME', '');
-define('GMAIL_APP_PASSWORD', ''); // Replace with your actual app password
-define('TWILIO_ACCOUNT_SID', '');
-define('TWILIO_AUTH_TOKEN', '');
-define('TWILIO_PHONE_NUMBER', '');
-file_put_contents(__DIR__ . '/debug.log', '[' . date('Y-m-d H:i:s') . '] [INFO] Credentials defined' . PHP_EOL, FILE_APPEND);
-
-// Include PHPMailer libraries
-$phpmailer_files = [
-    __DIR__ . '/lib/PHPMailer/Exception.php',
-    __DIR__ . '/lib/PHPMailer/PHPMailer.php',
-    __DIR__ . '/lib/PHPMailer/SMTP.php'
-];
-
-foreach ($phpmailer_files as $file) {
-    if (!file_exists($file)) {
-        file_put_contents(__DIR__ . '/debug.log', '[' . date('Y-m-d H:i:s') . '] [ERROR] PHPMailer file missing: ' . $file . PHP_EOL, FILE_APPEND);
-        header('Content-Type: application/json');
-        die(json_encode(['success' => false, 'message' => 'serverError', 'debug' => 'PHPMailer file missing: ' . $file]));
-    }
-    try {
-        require_once $file;
-        file_put_contents(__DIR__ . '/debug.log', '[' . date('Y-m-d H:i:s') . '] [INFO] Loaded PHPMailer file: ' . $file . PHP_EOL, FILE_APPEND);
-    } catch (Throwable $e) {
-        file_put_contents(__DIR__ . '/debug.log', '[' . date('Y-m-d H:i:s') . '] [ERROR] PHPMailer file load error: ' . $file . ' - ' . $e->getMessage() . PHP_EOL, FILE_APPEND);
-        die(json_encode(['success' => false, 'message' => 'serverError', 'debug' => 'PHPMailer load error: ' . $e->getMessage()]));
-    }
-}
-
-// Include Twilio autoloader
-$twilio_autoloader = __DIR__ . '/lib/Twilio/autoload.php';
-if (!file_exists($twilio_autoloader)) {
-    file_put_contents(__DIR__ . '/debug.log', '[' . date('Y-m-d H:i:s') . '] [ERROR] Twilio autoloader missing: ' . $twilio_autoloader . PHP_EOL, FILE_APPEND);
-    header('Content-Type: application/json');
-    die(json_encode(['success' => false, 'message' => 'serverError', 'debug' => 'Twilio autoloader missing: ' . $twilio_autoloader]));
-}
-try {
-    require_once $twilio_autoloader;
-    file_put_contents(__DIR__ . '/debug.log', '[' . date('Y-m-d H:i:s') . '] [INFO] Loaded Twilio autoloader: ' . $twilio_autoloader . PHP_EOL, FILE_APPEND);
-} catch (Throwable $e) {
-    file_put_contents(__DIR__ . '/debug.log', '[' . date('Y-m-d H:i:s') . '] [ERROR] Twilio autoloader error: ' . $e->getMessage() . PHP_EOL, FILE_APPEND);
-    die(json_encode(['success' => false, 'message' => 'serverError', 'debug' => 'Twilio autoloader error: ' . $e->getMessage()]));
-}
-
-use PHPMailer\PHPMailer\PHPMailer;
-use PHPMailer\PHPMailer\Exception;
-use Twilio\Rest\Client;
-
-file_put_contents(__DIR__ . '/debug.log', '[' . date('Y-m-d H:i:s') . '] [INFO] Namespaces imported' . PHP_EOL, FILE_APPEND);
-
-// Database configuration
-define('DB_HOST', '');
-define('DB_USER', '');
-define('DB_PASS', '');
-define('DB_NAME', '');
-define('DB_PORT', );
-define('DEBUG_LOG_FILE', __DIR__ . '/debug.log');
-
-// Centralized logging function
-function logDebug($message, $level = 'INFO') {
-    $timestamp = date('Y-m-d H:i:s');
-    $log = "[$timestamp] [$level] $message\n";
-    file_put_contents(DEBUG_LOG_FILE, $log, FILE_APPEND);
-    error_log($log);
-}
-
-// Check PHP version
-if (version_compare(PHP_VERSION, '7.2.0', '<')) {
-    logDebug('PHP version too low: ' . PHP_VERSION, 'ERROR');
-    header('Content-Type: application/json');
-    die(json_encode(['success' => false, 'message' => 'serverError', 'debug' => 'PHP version must be 7.2 or higher']));
-}
-
-// Check file permissions for debug.log
-if (!is_writable(__DIR__ . '/debug.log')) {
-    error_log('[' . date('Y-m-d H:i:s') . '] [ERROR] debug.log not writable');
-    die(json_encode(['success' => false, 'message' => 'serverError', 'debug' => 'debug.log file not writable']));
-}
-
-// Log library loading success
-try {
-    logDebug('PHPMailer and Twilio libraries loaded successfully');
-} catch (Exception $e) {
-    logDebug('Failed to load libraries: ' . $e->getMessage(), 'ERROR');
-    header('Content-Type: application/json');
-    die(json_encode(['success' => false, 'message' => 'serverError', 'debug' => 'Library loading failed: ' . $e->getMessage()]));
-}
-
-// Database connection function
-function getDBConnection() {
-    try {
-        logDebug('Attempting database connection');
-        $conn = new mysqli(DB_HOST, DB_USER, DB_PASS, DB_NAME, DB_PORT);
-        if ($conn->connect_error) {
-            throw new Exception('Database connection failed: ' . $conn->connect_error);
-        }
-        $conn->set_charset('utf8mb4');
-        logDebug('Database connection established');
-        return $conn;
-    } catch (Exception $e) {
-        logDebug($e->getMessage(), 'ERROR');
-        header('Content-Type: application/json');
-        die(json_encode(['success' => false, 'message' => 'dbConnectionFailed', 'debug' => $e->getMessage()]));
-    }
-}
-
-// Generate unique code function
-function generateUniqueCode($conn) {
-    $characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-    $max_attempts = 10;
-    $attempt = 0;
-
-    try {
-        while ($attempt < $max_attempts) {
-            $code = '';
-            $bytes = random_bytes(8);
-            for ($i = 0; $i < 8; $i++) {
-                $code .= $characters[ord($bytes[$i]) % 36];
-            }
-            logDebug("Generated code attempt #$attempt: $code");
-
-            $query = "SELECT code FROM current_codes WHERE code = ? FOR UPDATE";
-            $stmt = $conn->prepare($query);
-            if (!$stmt) {
-                throw new Exception('Prepare failed for code check: ' . $conn->error);
-            }
-            $stmt->bind_param('s', $code);
-            if (!$stmt->execute()) {
-                throw new Exception('Code check execution failed: ' . $stmt->error);
-            }
-            $result = $stmt->get_result();
-            $stmt->close();
-
-            if ($result->num_rows === 0) {
-                logDebug("Unique code generated: $code");
-                return $code;
-            }
-            $attempt++;
-            logDebug("Code $code already exists, retrying");
-        }
-        throw new Exception("Failed to generate unique code after $max_attempts attempts");
-    } catch (Exception $e) {
-        logDebug('Code generation error: ' . $e->getMessage(), 'ERROR');
-        throw $e;
-    }
-}
-
-// Check admin login
 if (!isset($_SESSION['admin_id'])) {
-    logDebug('No admin_id in session, redirecting to reseller.php', 'WARNING');
     header('Location: reseller.php');
     exit;
 }
-$admin_id = $_SESSION['admin_id'];
-logDebug("Admin ID from session: $admin_id");
+$admin_id = (int)$_SESSION['admin_id'];
 
-try {
-    $conn = getDBConnection();
-    $query = "SELECT name FROM users WHERE id = ?";
-    $stmt = $conn->prepare($query);
-    if (!$stmt) {
-        throw new Exception('Prepare failed for admin query: ' . $conn->error);
-    }
-    $stmt->bind_param('i', $admin_id);
-    if (!$stmt->execute()) {
-        throw new Exception('Admin query execution failed: ' . $stmt->error);
-    }
-    $result = $stmt->get_result();
-    if ($result->num_rows === 0) {
-        throw new Exception("Invalid admin_id: $admin_id");
-    }
-    $row = $result->fetch_assoc();
-    $admin_name = $row['name'] ? htmlspecialchars(trim($row['name'])) : 'Admin';
-    $first_name = explode(' ', $admin_name)[0] ?? 'Admin';
-    $stmt->close();
-    logDebug("Admin validated: ID=$admin_id, Name=$admin_name");
-} catch (Exception $e) {
-    logDebug($e->getMessage(), 'ERROR');
+// L'admin existe toujours ? (protège contre les sessions périmées)
+// (la table admins n'a pas de colonne "name" : on affiche l'avatar e-mail/téléphone)
+$stmt = db()->prepare("SELECT COALESCE(NULLIF(email, ''), NULLIF(phone, ''), 'Admin') AS name FROM admins WHERE id = ? LIMIT 1");
+$stmt->execute([$admin_id]);
+$admin = $stmt->fetch();
+if (!$admin) {
+    audit('admin_stale_session', 'admin:' . $admin_id, 'Compte disparu : déconnexion.');
+    logout_current();
     header('Location: reseller.php');
     exit;
 }
+$admin_name = trim((string)$admin['name']) !== '' ? html(trim((string)$admin['name'])) : 'Admin';
+$first_name = explode(' ', $admin_name)[0] ?: 'Admin';
 
-// Handle AJAX requests
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    header('Content-Type: application/json');
-    try {
-        logDebug('POST request received');
-        $input = json_decode(file_get_contents('php://input'), true);
-        if (json_last_error() !== JSON_ERROR_NONE) {
-            throw new Exception('Invalid JSON input: ' . json_last_error_msg());
-        }
-        $action = $input['action'] ?? '';
-        logDebug("Received POST request with action: $action");
+    $input = json_input();
+    csrf_require($input);
 
-        switch ($action) {
-            case 'logout':
-                try {
-                    session_unset();
-                    session_destroy();
-                    setcookie('admin_id', '', time() - 3600, '/', '', false, true);
-                    logDebug('Logout successful for admin_id: ' . $admin_id);
-                    echo json_encode(['success' => true, 'message' => 'Logged out successfully']);
-                } catch (Exception $e) {
-                    logDebug('Logout error: ' . $e->getMessage(), 'ERROR');
-                    echo json_encode(['success' => false, 'message' => 'logoutFailed', 'debug' => $e->getMessage()]);
-                }
-                break;
+    switch ((string)($input['action'] ?? '')) {
+        case 'logout':
+            logout_current();
+            json_out(['success' => true, 'message' => 'Logged out successfully']);
 
-            case 'activate_code':
-                $subscription_id = $input['subscription_id'] ?? 0;
-                $buyer_contact = trim($input['buyer_contact'] ?? '');
-                if (!$subscription_id || !$buyer_contact) {
-                    throw new Exception("Invalid fields: subscription_id=$subscription_id, buyer_contact=$buyer_contact");
-                }
-                logDebug("Activating code: subscription_id=$subscription_id, buyer_contact=$buyer_contact");
+        case 'activate_code':
+            $subscriptionId = (int)($input['subscription_id'] ?? 0);
+            $buyerContact   = trim((string)($input['buyer_contact'] ?? ''));
+            if ($subscriptionId <= 0 || $buyerContact === '') {
+                json_out(['success' => false, 'message' => 'invalidFields']);
+            }
 
-                $conn->begin_transaction();
-                try {
-                    // Clean up expired codes
-                    $query = "DELETE FROM current_codes WHERE expiration_date <= NOW()";
-                    if (!$conn->query($query)) {
-                        throw new Exception("Cleanup failed: " . $conn->error);
-                    }
-                    logDebug('Expired codes cleaned successfully');
+            if (!rate_limit_check('activate', 'admin:' . $admin_id, 120, 300)) {
+                json_out(['success' => false, 'message' => 'tooManyAttempts']);
+            }
 
-                    // Validate subscription
-                    $query = "SELECT id, name, rate, duration_days FROM subscriptions WHERE id = ?";
-                    $stmt = $conn->prepare($query);
-                    if (!$stmt) {
-                        throw new Exception("Prepare failed for subscription: " . $conn->error);
-                    }
-                    $stmt->bind_param('i', $subscription_id);
-                    if (!$stmt->execute()) {
-                        throw new Exception("Subscription query execution failed: " . $stmt->error);
-                    }
-                    $result = $stmt->get_result();
-                    if ($result->num_rows === 0) {
-                        throw new Exception("Invalid subscription ID: $subscription_id");
-                    }
-                    $row = $result->fetch_assoc();
-                    $subscription_name = $row['name'];
-                    $rate = $row['rate'];
-                    $duration_days = $row['duration_days'] ?? 30;
-                    $commission = $rate * 0.25;
-                    $expiration_date = date('Y-m-d H:i:s', strtotime("+$duration_days days"));
-                    $stmt->close();
-                    logDebug("Subscription validated: ID=$subscription_id, Name=$subscription_name, Duration=$duration_days days");
+            $result = activate_code_for_subscriber($subscriptionId, $buyerContact);
+            if (!$result['ok']) {
+                audit('activate_failed', 'admin:' . $admin_id, $result['error']);
+                json_out(['success' => false, 'message' => $result['error']]);
+            }
 
-                    // Detect contact type
-                    $contact_type = preg_match('/^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$/', $buyer_contact) ? 'email' :
-                        (preg_match('/^\+?\d{9,15}$/', $buyer_contact) ? 'phone' : null);
-                    if (!$contact_type) {
-                        throw new Exception("Invalid contact format: $buyer_contact");
-                    }
-                    if ($contact_type === 'phone') {
-                        if (!preg_match('/^\+\d{9,15}$/', $buyer_contact)) {
-                            $buyer_contact = '+243' . ltrim($buyer_contact, '0');
-                            if (!preg_match('/^\+\d{9,15}$/', $buyer_contact)) {
-                                throw new Exception("Invalid phone number after adding +243: $buyer_contact");
-                            }
-                        }
-                    }
-                    logDebug("Contact type: $contact_type, Contact: $buyer_contact");
+            // Transaction commerciale (commission de 25 %, inchangée ; vente directe admin)
+            $commission = round(((float)$result['rate']) * 0.25, 2);
+            try {
+                db()->prepare('INSERT INTO transactions (reseller_id, subscription_id, buyer_contact, access_code, amount, commission, created_at) VALUES (?,?,?,?,?,?,?)')
+                    ->execute([0, $subscriptionId, $result['contact'], $result['code'], $result['rate'], $commission, date('Y-m-d H:i:s')]);
+            } catch (Throwable $e) {
+                audit('transaction_insert_error', 'admin:' . $admin_id, $e->getMessage());
+            }
 
-                    // Generate unique code
-                    $code = generateUniqueCode($conn);
+            json_out([
+                'success'           => true,
+                'code'              => $result['code'],
+                'rate'              => $result['rate'],
+                'commission'        => $commission,
+                'confirmation_sent' => '',  // e-mail/SMS configurables en phase 3 (via .env)
+                'expiration_date'   => $result['expiry'],
+            ]);
 
-                    // Insert into current_codes
-                    $query = "INSERT INTO current_codes (code, contact, contact_type, subscription_id, created_at, expiration_date) VALUES (?, ?, ?, ?, NOW(), ?)";
-                    $stmt = $conn->prepare($query);
-                    if (!$stmt) {
-                        throw new Exception("Prepare failed for current_codes: " . $conn->error);
-                    }
-                    $stmt->bind_param('sssis', $code, $buyer_contact, $contact_type, $subscription_id, $expiration_date);
-                    if (!$stmt->execute()) {
-                        throw new Exception("Current_codes insert failed: " . $stmt->error);
-                    }
-                    $stmt->close();
-                    logDebug("Inserted code into current_codes: $code");
+        case 'get_transactions':
+            $stmt = db()->prepare("SELECT t.id, COALESCE(r.name, 'Admin') AS reseller, s.name AS subscription,
+                                          t.buyer_contact, t.access_code, t.amount, t.commission, t.created_at
+                                   FROM transactions t
+                                   JOIN subscriptions s ON t.subscription_id = s.id
+                                   LEFT JOIN resellers r ON t.reseller_id = r.id
+                                   ORDER BY t.id DESC");
+            $stmt->execute();
+            json_out(['success' => true, 'transactions' => $stmt->fetchAll()]);
 
-                    // Prepare invoice
-                    $invoice = "ZinbConnect Invoice\n";
-                    $invoice .= "Contact: $buyer_contact\n";
-                    $invoice .= "Access Code: $code\n";
-                    $invoice .= "Subscription: $subscription_name\n";
-                    $invoice .= "Amount: $rate CDF\n";
-                    $invoice .= "Expiration: $expiration_date\n";
+        case 'get_earnings_data':
+            $stmt = db()->prepare('SELECT COALESCE(SUM(commission), 0) AS total_earnings FROM transactions WHERE reseller_id = ?');
+            $stmt->execute([$admin_id]);
+            $personal_earnings = (float)($stmt->fetchColumn() ?: 0);
 
-                    // Send confirmation
-                    if ($contact_type === 'email') {
-                        $mail = new PHPMailer(true);
-                        try {
-                            $mail->isSMTP();
-                            $mail->Host = 'smtp.gmail.com';
-                            $mail->SMTPAuth = true;
-                            $mail->Username = GMAIL_USERNAME;
-                            $mail->Password = GMAIL_APP_PASSWORD;
-                            $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
-                            $mail->Port = 587;
-                            $mail->setFrom(GMAIL_USERNAME, 'ZinbConnect');
-                            $mail->addAddress($buyer_contact);
-                            $mail->Subject = 'ZinbConnect Subscription Invoice';
-                            $mail->Body = $invoice;
-                            $mail->send();
-                            logDebug("Email sent to $buyer_contact");
-                        } catch (Exception $e) {
-                            throw new Exception("Email sending failed: " . $mail->ErrorInfo);
-                        }
-                    } else {
-                        $twilio = new Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
-                        try {
-                            $message = $twilio->messages->create(
-                                $buyer_contact,
-                                [
-                                    'from' => TWILIO_PHONE_NUMBER,
-                                    'body' => $invoice
-                                ]
-                            );
-                            logDebug("SMS sent to $buyer_contact: SID {$message->sid}");
-                        } catch (Exception $e) {
-                            throw new Exception("SMS sending failed: " . $e->getMessage());
-                        }
-                    }
+            $stmt = db()->prepare('SELECT COALESCE(SUM(amount) - SUM(commission), 0) AS enterprise_earnings FROM transactions');
+            $stmt->execute();
+            $enterprise_earnings = (float)($stmt->fetchColumn() ?: 0);
 
-                    // Insert transaction into DB
-                    $query = "INSERT INTO transactions (reseller_id, subscription_id, buyer_contact, access_code, amount, commission, created_at) VALUES (?, ?, ?, ?, ?, ?, NOW())";
-                    $stmt = $conn->prepare($query);
-                    if (!$stmt) {
-                        throw new Exception("Prepare failed for transaction: " . $conn->error);
-                    }
-                    $stmt->bind_param('iissdd', $admin_id, $subscription_id, $buyer_contact, $code, $rate, $commission);
-                    if (!$stmt->execute()) {
-                        throw new Exception("Transaction insert failed: " . $stmt->error);
-                    }
-                    $stmt->close();
-                    logDebug("Transaction recorded: Code=$code, Amount=$rate, Commission=$commission");
+            $stmt = db()->prepare('SELECT s.name AS subscription, COUNT(*) AS count
+                                   FROM transactions t JOIN subscriptions s ON t.subscription_id = s.id
+                                   GROUP BY s.id');
+            $stmt->execute();
+            $pie_data = ['labels' => [], 'data' => []];
+            foreach ($stmt->fetchAll() as $row) {
+                $pie_data['labels'][] = $row['subscription'];
+                $pie_data['data'][]   = (int)$row['count'];
+            }
 
-                    $conn->commit();
-                    logDebug("Code activation successful: $code");
-                    echo json_encode([
-                        'success' => true,
-                        'code' => $code,
-                        'rate' => $rate,
-                        'commission' => $commission,
-                        'confirmation_sent' => $contact_type === 'email' ? 'Email sent' : 'SMS sent',
-                        'expiration_date' => $expiration_date
-                    ]);
-                } catch (Exception $e) {
-                    $conn->rollback();
-                    $error_message = $e->getMessage();
-                    logDebug("Activate code error: $error_message", 'ERROR');
-                    $user_message = match (true) {
-                        str_contains($error_message, 'Invalid contact format') || str_contains($error_message, 'Invalid phone number') => 'invalidContact',
-                        str_contains($error_message, 'Invalid subscription') => 'invalidSubscription',
-                        str_contains($error_message, 'Email sending failed') => 'emailFailed',
-                        str_contains($error_message, 'SMS sending failed') => 'smsFailed',
-                        str_contains($error_message, 'Current_codes insert failed') => 'currentCodesInsertFailed',
-                        str_contains($error_message, 'Transaction insert failed') => 'transactionInsertFailed',
-                        str_contains($error_message, 'Cleanup failed') => 'dbCleanupFailed',
-                        str_contains($error_message, 'Failed to generate unique code') => 'codeGenerationFailed',
-                        default => 'activationFailed'
-                    };
-                    echo json_encode(['success' => false, 'message' => $user_message, 'debug' => $error_message]);
-                }
-                break;
+            // Bug d'origine corrigé :Daily_earnings était écrasé au lieu d'être accumulé
+            $stmt = db()->prepare('SELECT DATE(created_at) AS date, SUM(amount) - SUM(commission) AS daily_earnings
+                                   FROM transactions
+                                   GROUP BY DATE(created_at) ORDER BY date LIMIT 30');
+            $stmt->execute();
+            $line_data = ['labels' => [], 'data' => []];
+            foreach ($stmt->fetchAll() as $row) {
+                $line_data['labels'][] = $row['date'];
+                $line_data['data'][]   = (float)$row['daily_earnings'];
+            }
 
-            case 'get_transactions':
-                try {
-                    $query = "SELECT t.id, COALESCE(r.name, a.name, 'Unknown') AS reseller, s.name AS subscription, t.buyer_contact, t.access_code, t.amount, t.commission, t.created_at 
-                              FROM transactions t 
-                              LEFT JOIN resellers r ON t.reseller_id = r.id 
-                              LEFT JOIN users a ON t.reseller_id = 0 AND a.id = ? 
-                              JOIN subscriptions s ON t.subscription_id = s.id 
-                              ORDER BY t.id DESC";
-                    $stmt = $conn->prepare($query);
-                    if (!$stmt) {
-                        throw new Exception("Prepare failed: " . $conn->error);
-                    }
-                    $stmt->bind_param('i', $admin_id);
-                    if (!$stmt->execute()) {
-                        throw new Exception("Transaction query execution failed: " . $stmt->error);
-                    }
-                    $result = $stmt->get_result();
-                    $transactions = [];
-                    while ($row = $result->fetch_assoc()) {
-                        $transactions[] = $row;
-                    }
-                    $stmt->close();
-                    logDebug("Fetched " . count($transactions) . " transactions for admin_id: $admin_id");
-                    echo json_encode(['success' => true, 'transactions' => $transactions]);
-                } catch (Exception $e) {
-                    logDebug('Get transactions error: ' . $e->getMessage(), 'ERROR');
-                    echo json_encode(['success' => false, 'message' => 'dbQueryFailed', 'debug' => $e->getMessage()]);
-                }
-                break;
+            json_out([
+                'success'           => true,
+                'personal_earnings' => $personal_earnings,
+                'global_earnings'   => $enterprise_earnings,
+                'pie_data'          => $pie_data,
+                'line_data'         => $line_data,
+            ]);
 
-            case 'get_earnings_data':
-                try {
-                    $query = "SELECT SUM(commission) AS total_earnings FROM transactions WHERE reseller_id = ?";
-                    $stmt = $conn->prepare($query);
-                    if (!$stmt) {
-                        throw new Exception("Prepare failed: " . $conn->error);
-                    }
-                    $stmt->bind_param('i', $admin_id);
-                    if (!$stmt->execute()) {
-                        throw new Exception("Earnings query execution failed: " . $stmt->error);
-                    }
-                    $result = $stmt->get_result();
-                    $personal_earnings = $result->fetch_assoc()['total_earnings'] ?? 0;
-                    $stmt->close();
+        case 'toggle_reseller_status':
+            $resellerToggleId = (int)($input['reseller_id'] ?? 0);
+            $newStatus = $input['new_status'] ?? null;
+            if ($resellerToggleId <= 0 || !in_array($newStatus, [0, 1], true)) {
+                json_out(['success' => false, 'message' => 'invalidFields'], 400);
+            }
+            $stmt = db()->prepare('UPDATE resellers SET status = ? WHERE id = ?');
+            $stmt->execute([(int)$newStatus, $resellerToggleId]);
+            if ($stmt->rowCount() !== 1) {
+                json_out(['success' => false, 'message' => 'resellerNotFound'], 404);
+            }
+            audit('reseller_status_changed', 'admin:' . $admin_id, 'reseller=' . $resellerToggleId . ' status=' . (int)$newStatus);
+            json_out(['success' => true, 'status' => (int)$newStatus]);
 
-                    $query = "SELECT s.name AS subscription, COUNT(*) AS count 
-                              FROM transactions t JOIN subscriptions s ON t.subscription_id = s.id 
-                              WHERE t.reseller_id = ? GROUP BY s.id";
-                    $stmt = $conn->prepare($query);
-                    if (!$stmt) {
-                        throw new Exception("Prepare failed: " . $conn->error);
-                    }
-                    $stmt->bind_param('i', $admin_id);
-                    if (!$stmt->execute()) {
-                        throw new Exception("Pie data query execution failed: " . $stmt->error);
-                    }
-                    $result = $stmt->get_result();
-                    $pie_data = ['labels' => [], 'data' => []];
-                    while ($row = $result->fetch_assoc()) {
-                        $pie_data['labels'][] = $row['subscription'];
-                        $pie_data['data'][] = $row['count'];
-                    }
-                    $stmt->close();
+        case 'get_resellers':
+            // Aucune colonne sensible (mot de passe, TOTP) n'est renvoyée.
+            $stmt = db()->prepare('SELECT id, name, phone, email, address, status, created_at FROM resellers ORDER BY id DESC');
+            $stmt->execute();
+            json_out(['success' => true, 'resellers' => $stmt->fetchAll()]);
 
-                    $query = "SELECT SUM(amount) - SUM(commission) AS enterprise_earnings FROM transactions";
-                    $result = $conn->query($query);
-                    if (!$result) {
-                        throw new Exception("Enterprise earnings query failed: " . $conn->error);
-                    }
-                    $enterprise_earnings = $result->fetch_assoc()['enterprise_earnings'] ?? 0;
-
-                    $query = "SELECT DATE(created_at) AS date, SUM(amount) - SUM(commission) AS daily_earnings 
-                              FROM transactions 
-                              GROUP BY DATE(created_at) ORDER BY date LIMIT 30";
-                    $result = $conn->query($query);
-                    if (!$result) {
-                        throw new Exception("Line chart query failed: " . $conn->error);
-                    }
-                    $line_data = ['labels' => [], 'data' => []];
-                    while ($row = $result->fetch_assoc()) {
-                        $line_data['labels'][] = $row['date'];
-                        $line_data['data'] = $row['daily_earnings'];
-                    }
-
-                    logDebug("Earnings data fetched: personal=$personal_earnings, enterprise=$enterprise_earnings");
-                    echo json_encode([
-                        'success' => true,
-                        'personal_earnings' => $personal_earnings,
-                        'global_earnings' => $enterprise_earnings,
-                        'pie_data' => $pie_data,
-                        'line_data' => $line_data
-                    ]);
-                } catch (Exception $e) {
-                    logDebug('Get earnings data error: ' . $e->getMessage(), 'ERROR');
-                    echo json_encode(['success' => false, 'message' => 'dbQueryFailed', 'debug' => $e->getMessage()]);
-                }
-                break;
-
-            case 'toggle_reseller_status':
-                $reseller_id = $input['reseller_id'] ?? 0;
-                $new_status = $input['new_status'] ?? null;
-                if (!$reseller_id || !in_array($new_status, [0, 1], true)) {
-                    throw new Exception("Invalid reseller_id or new_status: reseller_id=$reseller_id, new_status=$new_status");
-                }
-                logDebug("Toggling reseller status: reseller_id=$reseller_id, new_status=$new_status");
-
-                $conn->begin_transaction();
-                try {
-                    $query = "SELECT id FROM resellers WHERE id = ?";
-                    $stmt = $conn->prepare($query);
-                    if (!$stmt) {
-                        throw new Exception("Prepare failed: " . $conn->error);
-                    }
-                    $stmt->bind_param('i', $reseller_id);
-                    if (!$stmt->execute()) {
-                        throw new Exception("Reseller query execution failed: " . $stmt->error);
-                    }
-                    $result = $stmt->get_result();
-                    if ($result->num_rows === 0) {
-                        throw new Exception("Reseller not found: ID=$reseller_id");
-                    }
-                    $stmt->close();
-
-                    $query = "UPDATE resellers SET status = ? WHERE id = ?";
-                    $stmt = $conn->prepare($query);
-                    if (!$stmt) {
-                        throw new Exception("Prepare failed: " . $conn->error);
-                    }
-                    $stmt->bind_param('ii', $new_status, $reseller_id);
-                    if (!$stmt->execute()) {
-                        throw new Exception("Update failed: " . $stmt->error);
-                    }
-                    $conn->commit();
-                    logDebug("Reseller status updated: reseller_id=$reseller_id, status=$new_status");
-                    echo json_encode(['success' => true, 'status' => $new_status]);
-                } catch (Exception $e) {
-                    $conn->rollback();
-                    logDebug('Toggle reseller status error: ' . $e->getMessage(), 'ERROR');
-                    echo json_encode(['success' => false, 'message' => 'statusUpdateFailed', 'debug' => $e->getMessage()]);
-                }
-                break;
-
-            case 'get_resellers':
-                try {
-                    $query = "SELECT id, name, phone, email, address, status, created_at FROM resellers ORDER BY id DESC";
-                    $result = $conn->query($query);
-                    if (!$result) {
-                        throw new Exception("Resellers query failed: " . $conn->error);
-                    }
-                    $resellers = [];
-                    while ($row = $result->fetch_assoc()) {
-                        $resellers[] = $row;
-                    }
-                    logDebug("Fetched " . count($resellers) . " resellers");
-                    echo json_encode(['success' => true, 'resellers' => $resellers]);
-                } catch (Exception $e) {
-                    logDebug('Get resellers error: ' . $e->getMessage(), 'ERROR');
-                    echo json_encode(['success' => false, 'message' => 'dbQueryFailed', 'debug' => $e->getMessage()]);
-                }
-                break;
-
-            default:
-                throw new Exception("Invalid action: $action");
-        }
-    } catch (Exception $e) {
-        logDebug('POST request error: ' . $e->getMessage(), 'ERROR');
-        echo json_encode(['success' => false, 'message' => 'invalidAction', 'debug' => $e->getMessage()]);
+        default:
+            json_out(['success' => false, 'message' => 'invalidAction'], 400);
     }
-    $conn->close();
-    exit;
 }
 ?>
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -718,23 +300,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <select id="subscriptionId" class="w-full p-2 border rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 text-opacity-100" required>
                         <option value="" id="selectSubscription">Select Subscription</option>
                         <?php
+                        // Forfaits chargés une fois en PDO (requête préparée) et échappés à l'affichage.
+                        // $subscriptions est défini en haut du fichier (section admin authentifiée).
                         try {
-                            $query = "SELECT id, name, rate FROM subscriptions ORDER BY id";
-                            $result = $conn->query($query);
-                            if (!$result) {
-                                throw new Exception("Subscriptions query failed: " . $conn->error);
+                            $subscriptions = db()->query('SELECT id, name, rate FROM subscriptions ORDER BY id')->fetchAll();
+                        } catch (Throwable $e) {
+                            audit('subscriptions_load_error', 'admin', $e->getMessage());
+                            $subscriptions = [];
+                        }
+                        if (count($subscriptions) > 0) {
+                            foreach ($subscriptions as $sub) {
+                                echo "<option value='" . html((string)$sub['id']) . "' data-rate='" . html((string)$sub['rate']) . "'>"
+                                    . html((string)$sub['name']) . " - " . html((string)$sub['rate']) . " CDF</option>";
                             }
-                            if ($result->num_rows > 0) {
-                                while ($row = $result->fetch_assoc()) {
-                                    echo "<option value='{$row['id']}' data-rate='{$row['rate']}'>{$row['name']} - {$row['rate']} CDF</option>";
-                                }
-                                logDebug("Loaded " . $result->num_rows . " subscriptions");
-                            } else {
-                                echo "<option value='' disabled id='noSubscriptions'>No subscriptions available</option>";
-                                logDebug("No subscriptions found", 'WARNING');
-                            }
-                        } catch (Exception $e) {
-                            logDebug('Subscription load error: ' . $e->getMessage(), 'ERROR');
+                        } else {
                             echo "<option value='' disabled id='noSubscriptions'>Error loading subscriptions</option>";
                         }
                         ?>
@@ -846,7 +425,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <p id="footerText">©2025 Zinbo Technology</p>
     </footer>
 
+    <meta name="csrf-token" content="<?php echo html(csrf_token()); ?>">
     <script>
+        // Jeton CSRF lu depuis la page (rotaté à chaque connexion)
+        const CSRF = document.querySelector('meta[name="csrf-token"]').content;
+
         particlesJS('particles-js', {
             particles: {
                 number: { value: 50, density: { enable: true, value_area: 800 } },
@@ -1141,7 +724,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         function performLogout() {
             fetch('/admin.php', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF },
                 body: JSON.stringify({ action: 'logout' })
             })
             .then(response => response.json())
@@ -1173,7 +756,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 activateBtn.textContent = translations[currentLang].activating;
                 fetch('/admin.php', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF },
                     body: JSON.stringify({ action: 'activate_code', subscription_id: subscriptionId, buyer_contact: buyerContact })
                 })
                 .then(response => response.json())
@@ -1228,7 +811,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             tbody.innerHTML = `<tr><td colspan="8" class="p-2 text-center">${translations[currentLang].loading}</td></tr>`;
             fetch('/admin.php', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF },
                 body: JSON.stringify({ action: 'get_transactions' })
             })
             .then(response => response.json())
@@ -1264,7 +847,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             tbody.innerHTML = `<tr><td colspan="8" class="p-2 text-center">${translations[currentLang].loading}</td></tr>`;
             fetch('/admin.php', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF },
                 body: JSON.stringify({ action: 'get_resellers' })
             })
             .then(response => response.json())
@@ -1296,7 +879,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             btn.disabled = true;
                             fetch('/admin.php', {
                                 method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
+                                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF },
                                 body: JSON.stringify({ action: 'toggle_reseller_status', reseller_id: resellerId, new_status: newStatus })
                             })
                             .then(response => response.json())
@@ -1335,7 +918,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             document.getElementById('enterpriseEarnings').textContent = translations[currentLang].loading;
             fetch('/admin.php', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF },
                 body: JSON.stringify({ action: 'get_earnings_data' })
             })
             .then(response => response.json())
@@ -1430,8 +1013,7 @@ return { predictions, advice, warnings, behaviors };
 
 document.getElementById('viewInsights').addEventListener('click', () => {
 fetch('/admin.php', {
-method: 'POST',
-headers: { 'Content-Type': 'application/json' },
+method: 'POST',            headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF },
 body: JSON.stringify({ action: 'get_earnings_data' })
 })
 .then(response => response.json())
@@ -1471,8 +1053,7 @@ link.click();
 
 document.getElementById('exportTransactions').addEventListener('click', () => {
 fetch('/admin.php', {
-method: 'POST',
-headers: { 'Content-Type': 'application/json' },
+method: 'POST',            headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF },
 body: JSON.stringify({ action: 'get_transactions' })
 })
 .then(response => response.json())
@@ -1504,8 +1085,7 @@ showModal('Error', translations[currentLang].serverError);
 
 document.getElementById('exportResellers').addEventListener('click', () => {
 fetch('/admin.php', {
-method: 'POST',
-headers: { 'Content-Type': 'application/json' },
+method: 'POST',            headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF },
 body: JSON.stringify({ action: 'get_resellers' })
 })
 .then(response => response.json())
@@ -1536,8 +1116,7 @@ showModal('Error', translations[currentLang].serverError);
 
 document.getElementById('exportEarnings').addEventListener('click', () => {
 fetch('/admin.php', {
-method: 'POST',
-headers: { 'Content-Type': 'application/json' },
+method: 'POST',            headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF },
 body: JSON.stringify({ action: 'get_earnings_data' })
 })
 .then(response => response.json())

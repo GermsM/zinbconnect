@@ -1,145 +1,87 @@
 <?php
-// Database configuration
-define('DB_HOST', '');
-define('DB_USER', '');
-define('DB_PASS', '');
-define('DB_NAME', '');
-define('DB_PORT', );
+/**
+ * Zinbconnect — Portail public (Phase 2 : sécurisé)
+ * - Configuration via .env (crash DB_PORT corrigé), base PDO préparée
+ * - Validation de code : lecture seule + anti-brute-force (20 tentatives / 5 min / IP) + CSRF
+ * - Les actions non authentifiées "purchase_subscription" et "assign_code" sont
+ *   SUPPRIMÉES : elles permettaient d'obtenir un code gratuit sans paiement (faille
+ *   critique de l'audit). Les ventes passent désormais par le tableau de bord admin
+ *   (authentifié), puis en Phase 3 par la génération de lots de tickets.
+ */
+declare(strict_types=1);
 
-// Database connection
-function getDBConnection() {
-    $conn = new mysqli(DB_HOST, DB_USER, DB_PASS, DB_NAME, DB_PORT);
-    if ($conn->connect_error) {
-        die(json_encode(['success' => false, 'message' => 'Database connection failed']));
-    }
-    return $conn;
+require_once __DIR__ . '/lib/security.php';
+
+security_headers();
+session_boot();
+
+// Nettoyage léger : une carte expirée n'est plus jamais valide.
+cleanup_expired_codes();
+
+/** Cookie "commodité" pour le JS : la base reste la seule source de vérité. */
+function set_access_cookies(string $code, string $expiryDate): void
+{
+    setcookie('access_code', $code, [
+        'expires'  => strtotime($expiryDate) ?: time() + 3600,
+        'path'     => '/',
+        'secure'   => is_https(),     // chiffrement automatique en production HTTPS
+        'httponly' => false,          // lu par le JS de la page (rappels d'expiration)
+        'samesite' => 'Lax',
+    ]);
+    setcookie('expiration_date', $expiryDate, [
+        'expires'  => strtotime($expiryDate) ?: time() + 3600,
+        'path'     => '/',
+        'secure'   => is_https(),
+        'httponly' => false,
+        'samesite' => 'Lax',
+    ]);
 }
 
-// Cleanup expired codes
-function cleanupExpiredCodes($conn) {
-    $conn->query("DELETE FROM current_codes WHERE expiration_date <= NOW()");
-}
-
-// Assign access code from access_codes to current_codes
-function assignAccessCode($conn, $subscription_id, $contact, $contact_type) {
-    $conn->begin_transaction();
-    try {
-        // Get a random code from access_codes
-        $query = "SELECT code FROM access_codes ORDER BY RAND() LIMIT 1";
-        $result = $conn->query($query);
-        if ($result->num_rows === 0) {
-            throw new Exception("No available access codes.");
-        }
-        $row = $result->fetch_assoc();
-        $code = $row['code'];
-        
-        // Get subscription duration
-        $query = "SELECT duration_days FROM subscriptions WHERE id = ?";
-        $stmt = $conn->prepare($query);
-        $stmt->bind_param('i', $subscription_id);
-        $stmt->execute();
-        $result = $stmt->get_result();
-        if ($result->num_rows === 0) {
-            throw new Exception("Invalid subscription ID.");
-        }
-        $row = $result->fetch_assoc();
-        $duration_days = $row['duration_days'];
-        $stmt->close();
-        
-        // Insert into current_codes
-        $expiration_date = date('Y-m-d H:i:s', strtotime("+$duration_days days"));
-        $query = "INSERT INTO current_codes (code, contact, contact_type, subscription_id, expiration_date) VALUES (?, ?, ?, ?, ?)";
-        $stmt = $conn->prepare($query);
-        $stmt->bind_param('sssis', $code, $contact, $contact_type, $subscription_id, $expiration_date);
-        $stmt->execute();
-        $stmt->close();
-        
-        // Delete from access_codes
-        $query = "DELETE FROM access_codes WHERE code = ?";
-        $stmt = $conn->prepare($query);
-        $stmt->bind_param('s', $code);
-        $stmt->execute();
-        $stmt->close();
-        
-        $conn->commit();
-        return ['success' => true, 'code' => $code, 'expiration_date' => $expiration_date];
-    } catch (Exception $e) {
-        $conn->rollback();
-        return ['success' => false, 'message' => $e->getMessage()];
-    }
-}
-
-// Handle mobile money purchase
-function purchaseSubscription($subscription_id, $contact, $contact_type) {
-    $conn = getDBConnection();
-    cleanupExpiredCodes($conn);
-    $result = assignAccessCode($conn, $subscription_id, $contact, $contact_type);
-    $conn->close();
-    return $result;
-}
-
-// Validate access code
-function validateAccessCode($code) {
-    $conn = getDBConnection();
-    cleanupExpiredCodes($conn);
-    $query = "SELECT expiration_date FROM current_codes WHERE code = ? AND expiration_date > NOW()";
-    $stmt = $conn->prepare($query);
-    $stmt->bind_param('s', $code);
-    $stmt->execute();
-    $result = $stmt->get_result();
-    $isValid = $result->num_rows > 0;
-    if ($isValid) {
-        $row = $result->fetch_assoc();
-        $expiration_date = $row['expiration_date'];
-        $stmt->close();
-        $conn->close();
-        return ['valid' => true, 'expiration_date' => $expiration_date];
-    }
-    $stmt->close();
-    $conn->close();
-    return ['valid' => false];
+// Forfaits pour la modale (lecture PDO préparée, échappée à l'affichage)
+$subscriptions = [];
+try {
+    $subscriptions = db()->query('SELECT id, name, rate FROM subscriptions ORDER BY id')->fetchAll();
+} catch (Throwable $e) {
+    audit('subscriptions_load_error', null, $e->getMessage());
 }
 
 // Handle AJAX requests
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    header('Content-Type: application/json');
-    $input = json_decode(file_get_contents('php://input'), true);
-    
-    if (isset($input['action'])) {
-        switch ($input['action']) {
-            case 'validate_code':
-                $code = $input['code'] ?? '';
-                $result = validateAccessCode($code);
-                if ($result['valid']) {
-                    // Set cookies for auto-connect
-                    setcookie('access_code', $code, strtotime($result['expiration_date']), '/', '', false, true);
-                    setcookie('expiration_date', $result['expiration_date'], strtotime($result['expiration_date']), '/', '', false, true);
-                }
-                echo json_encode($result);
-                break;
-                
-            case 'purchase_subscription':
-                $subscription_id = $input['subscription_id'] ?? 0;
-                $contact = $input['contact'] ?? '';
-                $contact_type = $input['contact_type'] ?? '';
-                $result = purchaseSubscription($subscription_id, $contact, $contact_type);
-                echo json_encode($result);
-                break;
-                
-            case 'assign_code':
-                $subscription_id = $input['subscription_id'] ?? 0;
-                $contact = $input['contact'] ?? '';
-                $contact_type = $input['contact_type'] ?? '';
-                $conn = getDBConnection();
-                $result = assignAccessCode($conn, $subscription_id, $contact, $contact_type);
-                $conn->close();
-                echo json_encode($result);
-                break;
-                
-            default:
-                echo json_encode(['success' => false, 'message' => 'Invalid action']);
-        }
-        exit;
+    $input = json_input();
+    csrf_require($input);
+
+    switch ((string)($input['action'] ?? '')) {
+        case 'validate_code':
+            $code = normalize_code((string)($input['code'] ?? ''));
+            if ($code === '') {
+                json_out(['valid' => false, 'reason' => 'invalid']);
+            }
+            // Anti-brute-force pour deviner un code : 20 essais / 5 min / IP
+            // (12 caractères non ambigus = 60 bits, la force brute de toute façon hors de portée)
+            if (!rate_limit_check('code_entry', client_ip(), 20, 300)) {
+                audit('code_entry_ratelimited', null, 'ip=' . client_ip());
+                json_out(['valid' => false, 'reason' => 'rateLimited']);
+            }
+
+            $result = check_code_public($code);
+            if ($result['valid']) {
+                // Session côté serveur + cookie de commodité (déchiffré côté JS uniquement)
+                $_SESSION['access_code'] = $code;
+                $_SESSION['code_expiry'] = $result['expiration_date'];
+                set_access_cookies($code, $result['expiration_date']);
+                audit('code_validated', null, 'hash=' . substr(code_hash($code), 0, 8) . '…');
+            }
+            json_out($result);
+            break;
+
+        case 'purchase_subscription':
+        case 'assign_code':
+            // Actions fermées : faille critique corrigée (codes gratuits sans paiement).
+            audit('free_code_attempt', null, 'action=' . (string)($input['action'] ?? '') . ' ip=' . client_ip());
+            json_out(['success' => false, 'message' => 'purchaseDisabled'], 410);
+
+        default:
+            json_out(['success' => false, 'message' => 'invalidAction'], 400);
     }
 }
 ?>
@@ -150,6 +92,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ZinbConnect - Bukavu</title>
+    <meta name="csrf-token" content="<?php echo html(csrf_token()); ?>">
+    <meta name="csrf-token" content="<?php echo html(csrf_token()); ?>">
     <link rel="icon" type="image/x-icon" href="download.png">
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
     <script src="https://cdn.tailwindcss.com"></script>
@@ -877,7 +821,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 connectionSuccessMessage: "Sasa umeunganishwa kwenye mtandao.",
                 connectionFailedTitle: "Hitilafu",
                 connectionFailedMessage: "Nambari ya upatikanaji sio sahihi au imekwisha muda.",
-                disconnect: "Tenganisha"
+                disconnect: "Tenganisha",
+                used: "Nambari hii imetumika tayari.",
+                expired: "Nambari imekwisha muda.",
+                rateLimited: "Majaribio mengi mno. Subiri dakika 5.",
+                purchaseDisabled: "Ununuzi mtandaoni umekwisha awamu: nunua namba kwa muuzaji."
             }
         };
 
@@ -965,6 +913,27 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         const notification = document.getElementById('notification');
         const disconnectBtn = document.getElementById('disconnectBtn');
 
+        const CSRF = document.querySelector('meta[name="csrf-token"]').content;
+
+        function jsonHeaders() {
+            return { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF };
+        }
+
+        // Message d'erreur clair selon la raison renvoyée par le serveur
+        function failureMessage(data) {
+            const t = translations[currentLang];
+            if (data.reason === 'rateLimited') return t.rateLimited;
+            if (data.reason === 'used') return t.used;
+            if (data.reason === 'expired') return t.expired;
+            return t.connectionFailedMessage;
+        }
+
+        function showNotification(message, isError) {
+            notification.textContent = message;
+            notification.classList.remove('hidden', isError ? 'text-green-500' : 'text-red-500');
+            notification.classList.add(isError ? 'text-red-500' : 'text-green-500');
+        }
+
         // Auto-connect on page load
         function autoConnect() {
             const code = getCookie('access_code');
@@ -972,7 +941,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (code && expirationDate && new Date(expirationDate) > new Date()) {
                 fetch('', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: jsonHeaders(),
                     body: JSON.stringify({ action: 'validate_code', code })
                 })
                 .then(response => response.json())
@@ -1034,22 +1003,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if (code) {
                     fetch('', {
                         method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
+                        headers: jsonHeaders(),
                         body: JSON.stringify({ action: 'validate_code', code })
                     })
                     .then(response => response.json())
                     .then(data => {
-                        showConnectionModal(data.valid);
                         if (data.valid) {
+                            showConnectionModal(true);
                             disconnectBtn.classList.remove('hidden');
                             document.getElementById('connectFormContainer').innerHTML = `<p class="text-green-500 text-center">${translations[currentLang].connected}</p>`;
+                        } else {
+                            showNotification(failureMessage(data), true);
                         }
                     })
-                    .catch(() => showConnectionModal(false));
+                    .catch(() => showNotification(translations[currentLang].connectionFailedMessage, true));
                 } else {
-                    notification.textContent = translations[currentLang].invalidCode;
-                    notification.classList.remove('hidden', 'text-green-500');
-                    notification.classList.add('text-red-500');
+                    showNotification(translations[currentLang].invalidCode, true);
                 }
             });
         }
@@ -1085,28 +1054,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 
                 fetch('', {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: jsonHeaders(),
                     body: JSON.stringify({ action: 'purchase_subscription', subscription_id: subscriptionId, contact, contact_type })
 })
 .then(response => response.json())
 .then(data => {
 paymentLoadingModal.classList.add('hidden');
-if (data.success) {
-notification.textContent = translations[currentLang].purchaseSuccess + data.code;
-notification.classList.remove('hidden', 'text-red-500');
-notification.classList.add('text-green-500');
-document.getElementById('accessCode').value = data.code;
-} else {
-notification.textContent = translations[currentLang].purchaseFailed;
-notification.classList.remove('hidden', 'text-green-500');
-notification.classList.add('text-red-500');
-}
+// Achat en ligne désactivé (sécurité, phase 2) : la vente se fait par un revendeur.
+showNotification(translations[currentLang].purchaseDisabled, true);
 })
 .catch(() => {
 paymentLoadingModal.classList.add('hidden');
-notification.textContent = translations[currentLang].purchaseFailed;
-notification.classList.remove('hidden', 'text-green-500');
-notification.classList.add('text-red-500');
+showNotification(translations[currentLang].purchaseDisabled, true);
 });
 }
 });
@@ -1184,25 +1143,15 @@ const contactType = document.getElementById('resellerContactType').value;
 
 fetch('', {
 method: 'POST',
-headers: { 'Content-Type': 'application/json' },
+headers: jsonHeaders(),
 body: JSON.stringify({ action: 'assign_code', subscription_id: subscriptionId, contact, contact_type: contactType })
 })
 .then(response => response.json())
 .then(data => {
-if (data.success) {
-notification.textContent = translations[currentLang].assignSuccess + data.code;
-notification.classList.remove('hidden', 'text-red-500');
-notification.classList.add('text-green-500');
-} else {
-notification.textContent = translations[currentLang].assignFailed + (data.message || '');
-notification.classList.remove('hidden', 'text-green-500');
-notification.classList.add('text-red-500');
-}
+showNotification(translations[currentLang].purchaseDisabled, true);
 })
 .catch(() => {
-notification.textContent = translations[currentLang].assignFailed;
-notification.classList.remove('hidden', 'text-green-500');
-notification.classList.add('text-red-500');
+showNotification(translations[currentLang].purchaseDisabled, true);
 });
 });
 

@@ -1,20 +1,24 @@
 <?php
-header('Content-Type: application/json');
-require_once 'index.php'; // Include DB functions
+/**
+ * Zinbconnect — Achats en ligne : DÉSACTIVÉS (faille critique corrigée).
+ *
+ * Dans la version d'origine, n'importe quel visiteur anonyme pouvait obtenir un
+ * code réel sans paiement en appelant ce script. La vente se fait maintenant :
+ *   - auprès d'un revendeur (dashboard.php, session + CSRF) ;
+ *   - ou par la console admin (admin.php, phase 3 : lots imprimables).
+ * Toute demande ici est refusée et enregistrée dans le journal d'audit.
+ */
+declare(strict_types=1);
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $subscription_id = isset($_POST['subscription_id']) ? $_POST['subscription_id'] : '';
-    $contact = isset($_POST['contact']) ? $_POST['contact'] : '';
-    $contact_type = isset($_POST['contact_type']) ? $_POST['contact_type'] : '';
-    
-    if (empty($subscription_id) || empty($contact) || !in_array($contact_type, ['phone', 'email'])) {
-        echo json_encode(['success' => false, 'message' => 'Invalid input']);
-        exit;
-    }
-    
-    $result = purchaseSubscription($subscription_id, $contact, $contact_type);
-    echo json_encode($result);
-} else {
-    echo json_encode(['success' => false, 'message' => 'Invalid request method']);
+require_once __DIR__ . '/lib/security.php';
+
+security_headers();
+session_boot();
+
+audit('free_code_attempt', null, 'endpoint=purchase_subscription.php ip=' . client_ip());
+
+if (($_SERVER['HTTP_X_CSRF_TOKEN'] ?? ($_POST['csrf'] ?? null)) !== null) {
+    csrf_require();  // jeton présent mais invalide : log supplémentaire
 }
-?>
+
+json_out(['success' => false, 'message' => 'purchaseDisabled'], 410);

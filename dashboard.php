@@ -1,291 +1,130 @@
 <?php
-// Start output buffering to capture unintended output
-ob_start();
-session_start();
+/**
+ * Zinbconnect — Tableau de bord revendeur (Phase 2 : sécurisé)
+ * - Session obligatoire + re-vérification du revendeur en base (PDO préparé)
+ * - Jeton CSRF exigé sur toutes les actions POST
+ * - Activation d'un code : consommation ATOMIQUE du stock (un code ne se vend jamais deux fois)
+ * - Journal d'audit pour chaque action sensible
+ */
+declare(strict_types=1);
 
-// Log errors to file instead of displaying
-ini_set('display_errors', '0');
-ini_set('log_errors', '1');
-ini_set('error_log', __DIR__ . '/debug.log');
-error_reporting(E_ALL);
+require_once __DIR__ . '/lib/security.php';
 
-// Database configuration
-define('DB_HOST', '');
-define('DB_USER', '');
-define('DB_PASS', '');
-define('DB_NAME', '');
-define('DB_PORT', );
+security_headers();
+session_boot();
 
-function getDBConnection() {
-    $conn = new mysqli(DB_HOST, DB_USER, DB_PASS, DB_NAME, DB_PORT);
-    if ($conn->connect_error) {
-        error_log("Database connection failed: " . $conn->connect_error);
-        header('Content-Type: application/json');
-        die(json_encode(['success' => false, 'message' => 'Database connection failed']));
-    }
-    return $conn;
-}
-
-// Centralized logging function
-function logDebug($message, $level = 'INFO') {
-    $timestamp = date('Y-m-d H:i:s');
-    $log = "[$timestamp] [$level] $message" . PHP_EOL;
-    file_put_contents(__DIR__ . '/debug.log', $log, FILE_APPEND);
-}
-
-// Check if reseller is logged in
 if (!isset($_SESSION['reseller_id'])) {
-    logDebug("No reseller_id in session, redirecting to reseller.php", 'WARNING');
     header('Location: reseller.php');
     exit;
 }
-$reseller_id = $_SESSION['reseller_id'];
+$reseller_id = (int)$_SESSION['reseller_id'];
 
-// Validate reseller_id and get first name
-$conn = getDBConnection();
-$query = "SELECT name FROM resellers WHERE id = ?";
-$stmt = $conn->prepare($query);
-if (!$stmt) {
-    logDebug("Prepare failed for reseller query: " . $conn->error, 'ERROR');
+// Le revendeur existe toujours ? (protège contre les sessions périmées)
+$stmt = db()->prepare('SELECT name FROM resellers WHERE id = ? LIMIT 1');
+$stmt->execute([$reseller_id]);
+$reseller = $stmt->fetch();
+if (!$reseller) {
+    audit('dashboard_stale_session', 'reseller:' . $reseller_id, 'Compte disparu : déconnexion.');
+    logout_current();
     header('Location: reseller.php');
     exit;
 }
-$stmt->bind_param('i', $reseller_id);
-$stmt->execute();
-$result = $stmt->get_result();
-if ($result->num_rows === 0) {
-    logDebug("Invalid reseller_id: $reseller_id", 'ERROR');
-    header('Location: reseller.php');
-    exit;
-}
-$row = $result->fetch_assoc();
-$reseller_name = $row['name'] ? htmlspecialchars(trim($row['name'])) : 'Reseller';
-$first_name = explode(' ', $reseller_name)[0] ?? 'Reseller';
-$stmt->close();
+$reseller_name = trim((string)$reseller['name']) !== '' ? html(trim((string)$reseller['name'])) : 'Reseller';
+$first_name = explode(' ', $reseller_name)[0] ?: 'Reseller';
 
-// Handle AJAX requests
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    header('Content-Type: application/json');
-    $input = json_decode(file_get_contents('php://input'), true);
-    if (json_last_error() !== JSON_ERROR_NONE) {
-        logDebug("Invalid JSON input: " . json_last_error_msg(), 'ERROR');
-        echo json_encode(['success' => false, 'message' => 'Invalid JSON']);
-        exit;
-    }
-    $action = $input['action'] ?? '';
-    logDebug("Received POST request with action: $action");
-    
-    switch ($action) {
+    $input = json_input();
+    csrf_require($input);
+
+    switch ((string)($input['action'] ?? '')) {
         case 'logout':
-            session_unset();
-            session_destroy();
-            setcookie('reseller_id', '', time() - 3600, '/', '', false, true);
-            logDebug("Logout successful for reseller_id: $reseller_id");
-            echo json_encode(['success' => true, 'message' => 'Logged out successfully']);
-            exit;
+            logout_current();
+            json_out(['success' => true, 'message' => 'Logged out successfully']);
 
         case 'activate_code':
-            $subscription_id = $input['subscription_id'] ?? 0;
-            $buyer_contact = trim($input['buyer_contact'] ?? '');
-            if ($subscription_id && $buyer_contact) {
-                $conn->begin_transaction();
-                try {
-                    // Check if access codes are available
-                    $query = "SELECT COUNT(*) AS code_count FROM access_codes";
-                    $result = $conn->query($query);
-                    if (!$result) {
-                        throw new Exception("Failed to check access codes: " . $conn->error);
-                    }
-                    if ($result->fetch_assoc()['code_count'] == 0) {
-                        throw new Exception("No available access codes");
-                    }
+            $subscriptionId = (int)($input['subscription_id'] ?? 0);
+            $buyerContact   = trim((string)($input['buyer_contact'] ?? ''));
+            if ($subscriptionId <= 0 || $buyerContact === '') {
+                json_out(['success' => false, 'message' => 'invalidFields']);
+            }
 
-                    // Get and delete access code
-                    $query = "SELECT code FROM access_codes LIMIT 1 FOR UPDATE";
-                    $result = $conn->query($query);
-                    if (!$result || $result->num_rows === 0) {
-                        throw new Exception("No available access codes");
-                    }
-                    $code = $result->fetch_assoc()['code'];
-                    
-                    $query = "DELETE FROM access_codes WHERE code = ?";
-                    $stmt = $conn->prepare($query);
-                    if (!$stmt) throw new Exception("Prepare failed for delete: " . $conn->error);
-                    $stmt->bind_param('s', $code);
-                    if (!$stmt->execute()) throw new Exception("Delete failed: " . $stmt->error);
-                    $stmt->close();
-                    
-                    // Get subscription details
-                    $query = "SELECT id, name, rate, duration_days FROM subscriptions WHERE id = ?";
-                    $stmt = $conn->prepare($query);
-                    if (!$stmt) throw new Exception("Prepare failed for subscription: " . $conn->error);
-                    $stmt->bind_param('i', $subscription_id);
-                    $stmt->execute();
-                    $result = $stmt->get_result();
-                    if ($result->num_rows === 0) throw new Exception("Invalid subscription");
-                    $row = $result->fetch_assoc();
-                    $subscription_name = $row['name'];
-                    $rate = $row['rate'];
-                    $duration_days = $row['duration_days'] ?? 30;
-                    $commission = $rate * 0.25;
-                    $expiration_date = date('Y-m-d H:i:s', strtotime("+$duration_days days"));
-                    $stmt->close();
-                    
-                    // Validate contact type (relaxed phone regex)
-                    $contact_type = preg_match('/^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$/', $buyer_contact) ? 'email' :
-                        (preg_match('/^\+?\d{7,15}$/', $buyer_contact) ? 'phone' : null);
-                    if (!$contact_type) throw new Exception("Invalid contact format: $buyer_contact");
-                    if ($contact_type === 'phone' && !preg_match('/^\+\d{7,15}$/', $buyer_contact)) {
-                        $buyer_contact = '+243' . ltrim($buyer_contact, '0');
-                        if (!preg_match('/^\+\d{7,15}$/', $buyer_contact)) {
-                            throw new Exception("Invalid phone number after formatting: $buyer_contact");
-                        }
-                    }
-                    
-                    // Payment confirmation
-                    logDebug("Sending $contact_type confirmation to $buyer_contact for code $code");
-                    
-                    // Insert transaction
-                    $query = "INSERT INTO transactions (reseller_id, subscription_id, buyer_contact, access_code, amount, commission, created_at) VALUES (?, ?, ?, ?, ?, ?, NOW())";
-                    $stmt = $conn->prepare($query);
-                    if (!$stmt) throw new Exception("Prepare failed for transaction: " . $conn->error);
-                    $stmt->bind_param('iissdd', $reseller_id, $subscription_id, $buyer_contact, $code, $rate, $commission);
-                    if (!$stmt->execute()) throw new Exception("Insert transaction failed: " . $stmt->error);
-                    $stmt->close();
-                    
-                    // Insert into current_codes
-                    $query = "INSERT INTO current_codes (code, contact, contact_type, subscription_id, created_at, expiration_date) VALUES (?, ?, ?, ?, NOW(), ?)";
-                    $stmt = $conn->prepare($query);
-                    if (!$stmt) throw new Exception("Prepare failed for current_codes: " . $conn->error);
-                    $stmt->bind_param('sssls', $code, $buyer_contact, $contact_type, $subscription_id, $expiration_date);
-                    if (!$stmt->execute()) throw new Exception("Insert current_codes failed: " . $stmt->error);
-                    $stmt->close();
-                    
-                    $conn->commit();
-                    logDebug("Code activated successfully: $code for reseller_id: $reseller_id");
-                    echo json_encode([
-                        'success' => true,
-                        'code' => $code,
-                        'rate' => $rate,
-                        'commission' => $commission,
-                        'contact_type' => $contact_type,
-                        'buyer_contact' => $buyer_contact,
-                        'subscription_name' => $subscription_name,
-                        'expiration_date' => $expiration_date
-                    ]);
-                } catch (Exception $e) {
-                    $conn->rollback();
-                    $error_message = $e->getMessage();
-                    logDebug("Activate code error: $error_message", 'ERROR');
-                    $user_message = match (true) {
-                        str_contains($error_message, 'No available access codes') => 'noCodesAvailable',
-                        str_contains($error_message, 'Invalid subscription') => 'invalidSubscription',
-                        str_contains($error_message, 'Invalid contact format') || str_contains($error_message, 'Invalid phone number') => 'invalidContact',
-                        default => 'activationFailed'
-                    };
-                    echo json_encode(['success' => false, 'message' => $user_message, 'debug' => $error_message]);
-                }
-            } else {
-                logDebug("Invalid fields: subscription_id=$subscription_id, buyer_contact=$buyer_contact", 'ERROR');
-                echo json_encode(['success' => false, 'message' => 'invalidFields']);
+            if (!rate_limit_check('activate', 'reseller:' . $reseller_id, 60, 300)) {
+                json_out(['success' => false, 'message' => 'tooManyAttempts']);
             }
-            break;
-            
-        case 'get_transactions':
-            $query = "SELECT t.id, s.name AS subscription, t.buyer_contact, t.access_code, t.amount, t.commission, t.created_at 
-                      FROM transactions t 
-                      JOIN subscriptions s ON t.subscription_id = s.id 
-                      WHERE t.reseller_id = ? 
-                      ORDER BY t.id DESC";
-            $stmt = $conn->prepare($query);
-            if (!$stmt) {
-                logDebug("Prepare failed: " . $conn->error, 'ERROR');
-                echo json_encode(['success' => false, 'message' => 'dbQueryFailed']);
-                exit;
+
+            $result = activate_code_for_subscriber($subscriptionId, $buyerContact);
+            if (!$result['ok']) {
+                audit('activate_failed', 'reseller:' . $reseller_id, $result['error']);
+                json_out(['success' => false, 'message' => $result['error']]);
             }
-            $stmt->bind_param('i', $reseller_id);
-            $stmt->execute();
-            $result = $stmt->get_result();
-            $transactions = [];
-            while ($row = $result->fetch_assoc()) {
-                $transactions[] = $row;
+
+            // Transaction commerciale (commission de 25 %, inchangée)
+            $commission = round(((float)$result['rate']) * 0.25, 2);
+            try {
+                db()->prepare('INSERT INTO transactions (reseller_id, subscription_id, buyer_contact, access_code, amount, commission, created_at) VALUES (?,?,?,?,?,?,?)')
+                    ->execute([$reseller_id, $subscriptionId, $result['contact'], $result['code'], $result['rate'], $commission, date('Y-m-d H:i:s')]);
+            } catch (Throwable $e) {
+                audit('transaction_insert_error', 'reseller:' . $reseller_id, $e->getMessage());
             }
-            logDebug("Fetched " . count($transactions) . " transactions for reseller_id: $reseller_id");
-            echo json_encode(['success' => true, 'transactions' => $transactions]);
-            $stmt->close();
-            break;
-            
-        case 'get_earnings_data':
-            $query = "SELECT SUM(commission) AS total_earnings FROM transactions WHERE reseller_id = ?";
-            $stmt = $conn->prepare($query);
-            if (!$stmt) {
-                logDebug("Prepare failed: " . $conn->error, 'ERROR');
-                echo json_encode(['success' => false, 'message' => 'dbQueryFailed']);
-                exit;
-            }
-            $stmt->bind_param('i', $reseller_id);
-            $stmt->execute();
-            $result = $stmt->get_result();
-            $personal_earnings = $result->fetch_assoc()['total_earnings'] ?? 0;
-            $stmt->close();
-            
-            $query = "SELECT s.name AS subscription, COUNT(*) AS count 
-                      FROM transactions t JOIN subscriptions s ON t.subscription_id = s.id 
-                      WHERE t.reseller_id = ? GROUP BY s.id";
-            $stmt = $conn->prepare($query);
-            if (!$stmt) {
-                logDebug("Prepare failed: " . $conn->error, 'ERROR');
-                echo json_encode(['success' => false, 'message' => 'dbQueryFailed']);
-                exit;
-            }
-            $stmt->bind_param('i', $reseller_id);
-            $stmt->execute();
-            $result = $stmt->get_result();
-            $pie_data = ['labels' => [], 'data' => []];
-            while ($row = $result->fetch_assoc()) {
-                $pie_data['labels'][] = $row['subscription'];
-                $pie_data['data'][] = $row['count'];
-            }
-            $stmt->close();
-            
-            $query = "SELECT DATE(created_at) AS date, SUM(commission) AS daily_earnings 
-                      FROM transactions 
-                      WHERE reseller_id = ? 
-                      GROUP BY DATE(created_at) ORDER BY date LIMIT 30";
-            $stmt = $conn->prepare($query);
-            if (!$stmt) {
-                logDebug("Commission earnings query failed: " . $conn->error, 'ERROR');
-                echo json_encode(['success' => false, 'message' => 'dbQueryFailed']);
-                exit;
-            }
-            $stmt->bind_param('i', $reseller_id);
-            $stmt->execute();
-            $result = $stmt->get_result();
-            $line_data = ['labels' => [], 'data' => []];
-            while ($row = $result->fetch_assoc()) {
-                $line_data['labels'][] = $row['date'];
-                $line_data['data'][] = $row['daily_earnings'];
-            }
-            
-            logDebug("Earnings data fetched: personal=$personal_earnings");
-            echo json_encode([
-                'success' => true,
-                'personal_earnings' => $personal_earnings,
-                'pie_data' => $pie_data,
-                'line_data' => $line_data
+
+            json_out([
+                'success'           => true,
+                'code'              => $result['code'],
+                'rate'              => $result['rate'],
+                'commission'        => $commission,
+                'contact_type'      => $result['contactType'],
+                'buyer_contact'     => $result['contact'],
+                'subscription_name' => $result['name'],
+                'expiration_date'   => $result['expiry'],
             ]);
-            break;
-            
+
+        case 'get_transactions':
+            $stmt = db()->prepare('SELECT t.id, s.name AS subscription, t.buyer_contact, t.access_code, t.amount, t.commission, t.created_at
+                                   FROM transactions t
+                                   JOIN subscriptions s ON t.subscription_id = s.id
+                                   WHERE t.reseller_id = ?
+                                   ORDER BY t.id DESC');
+            $stmt->execute([$reseller_id]);
+            json_out(['success' => true, 'transactions' => $stmt->fetchAll()]);
+
+        case 'get_earnings_data':
+            $stmt = db()->prepare('SELECT COALESCE(SUM(commission), 0) AS total_earnings FROM transactions WHERE reseller_id = ?');
+            $stmt->execute([$reseller_id]);
+            $personal_earnings = (float)($stmt->fetchColumn() ?: 0);
+
+            $stmt = db()->prepare('SELECT s.name AS subscription, COUNT(*) AS count
+                                   FROM transactions t JOIN subscriptions s ON t.subscription_id = s.id
+                                   WHERE t.reseller_id = ? GROUP BY s.id');
+            $stmt->execute([$reseller_id]);
+            $pie_data = ['labels' => [], 'data' => []];
+            foreach ($stmt->fetchAll() as $row) {
+                $pie_data['labels'][] = $row['subscription'];
+                $pie_data['data'][]   = (int)$row['count'];
+            }
+
+            $stmt = db()->prepare('SELECT DATE(created_at) AS date, SUM(commission) AS daily_earnings
+                                   FROM transactions
+                                   WHERE reseller_id = ?
+                                   GROUP BY DATE(created_at) ORDER BY date LIMIT 30');
+            $stmt->execute([$reseller_id]);
+            $line_data = ['labels' => [], 'data' => []];
+            foreach ($stmt->fetchAll() as $row) {
+                $line_data['labels'][] = $row['date'];
+                $line_data['data'][]   = (float)$row['daily_earnings'];
+            }
+
+            json_out([
+                'success'           => true,
+                'personal_earnings' => $personal_earnings,
+                'pie_data'          => $pie_data,
+                'line_data'         => $line_data,
+            ]);
+
         default:
-            logDebug("Invalid action: $action", 'ERROR');
-            echo json_encode(['success' => false, 'message' => 'invalidAction']);
+            json_out(['success' => false, 'message' => 'invalidAction'], 400);
     }
-    $conn->close();
-    ob_end_clean();
-    exit;
 }
 ?>
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -399,15 +238,20 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <select id="subscriptionId" class="w-full p-2 border rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 text-opacity-100" required>
                         <option value="" id="selectSubscription">Select Subscription</option>
                         <?php
-                        $query = "SELECT id, name, rate FROM subscriptions ORDER BY id";
-                        $result = $conn->query($query);
-                        if ($result && $result->num_rows > 0) {
-                            while ($row = $result->fetch_assoc()) {
-                                echo "<option value='{$row['id']}' data-rate='{$row['rate']}'>{$row['name']} - {$row['rate']} CDF</option>";
+                        // Forfaits chargés en PDO (requête préparée) et échappés à l'affichage
+                        try {
+                            $subscriptions = db()->query('SELECT id, name, rate FROM subscriptions ORDER BY id')->fetchAll();
+                        } catch (Throwable $e) {
+                            audit('subscriptions_load_error', 'reseller', $e->getMessage());
+                            $subscriptions = [];
+                        }
+                        if (count($subscriptions) > 0) {
+                            foreach ($subscriptions as $sub) {
+                                echo "<option value='" . html((string)$sub['id']) . "' data-rate='" . html((string)$sub['rate']) . "'>"
+                                    . html((string)$sub['name']) . " - " . html((string)$sub['rate']) . " CDF</option>";
                             }
                         } else {
-                            echo "<option value='' disabled id='noSubscriptions'>No subscriptions available</option>";
-                            logDebug("No subscriptions found: " . ($result ? "Empty result" : $conn->error), 'WARNING');
+                            echo "<option value='' disabled id='noSubscriptions'>Error loading subscriptions</option>";
                         }
                         ?>
                     </select>
@@ -492,7 +336,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <p id="footerText">©2025 Zinbo Technology</p>
     </footer>
 
+    <meta name="csrf-token" content="<?php echo html(csrf_token()); ?>">
     <script>
+        // Jeton CSRF lu depuis la page (rotaté à chaque connexion)
+        const CSRF = document.querySelector('meta[name="csrf-token"]').content;
+
         // Initialize Particles.js
         particlesJS('particles-js', {
             particles: {
@@ -706,7 +554,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         function performLogout() {
             fetch('', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF },
                 body: JSON.stringify({ action: 'logout' })
             })
             .then(response => response.json())
@@ -756,7 +604,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             console.debug(`Sending activation request: subscription_id=${subscriptionId}, buyer_contact=${buyerContact}`);
             fetch('', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF },
                 body: JSON.stringify({ action: 'activate_code', subscription_id: parseInt(subscriptionId), buyer_contact: buyerContact })
             })
             .then(response => {
@@ -862,7 +710,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             tbody.innerHTML = `<tr><td colspan="7" class="p-2 text-center">${translations[currentLang].loading}</td></tr>`;
             return fetch('', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF },
                 body: JSON.stringify({ action: 'get_transactions' })
             })
             .then(response => response.json())
@@ -897,7 +745,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             document.getElementById('personalEarnings').textContent = translations[currentLang].loading;
             return fetch('', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF },
                 body: JSON.stringify({ action: 'get_earnings_data' })
             })
             .then(response => response.json())
@@ -1005,7 +853,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         document.getElementById('viewInsights').addEventListener('click', () => {
             fetch('', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF },
                 body: JSON.stringify({ action: 'get_earnings_data' })
             })
             .then(response => response.json())
@@ -1054,7 +902,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         document.getElementById('exportEarnings').addEventListener('click', () => {
             fetch('', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF },
                 body: JSON.stringify({ action: 'get_earnings_data' })
             })
             .then(response => response.json())
@@ -1084,7 +932,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         document.getElementById('exportTransactions').addEventListener('click', () => {
             fetch('', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF },
                 body: JSON.stringify({ action: 'get_transactions' })
             })
             .then(response => response.json())
