@@ -14,6 +14,12 @@
  */
 declare(strict_types=1);
 
+// Script d'administration : jamais exécutable depuis le web.
+if (PHP_SAPI !== 'cli') {
+    http_response_code(403);
+    exit('Ce script doit être lancé en ligne de commande.');
+}
+
 require_once __DIR__ . '/../lib/security.php';
 
 $dryRun = in_array('--dry-run', $argv ?? [], true);

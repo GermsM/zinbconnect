@@ -1,0 +1,40 @@
+# Zinbconnect — protection Apache (hébergement mutualisé type great-site.net)
+# Le serveur PHP intégré (php -S) ignore ce fichier : en local, pas de protection
+# nécessaire puisque l'application écoute seulement sur 127.0.0.1.
+
+Options -Indexes
+
+# ------------------------------------------------------------------
+# 1) Fichiers qui ne doivent JAMAIS être servis par le web
+#    (mot de passe de base, secrets TOTP, sauvegardes, base SQLite...)
+# ------------------------------------------------------------------
+<FilesMatch "^\.env|\.env\..*|\.sqlite$|\.sql$|\.log$|\.md$|composer\.(json|lock)$">
+  <IfModule mod_authz_core.c>
+    Require all denied
+  </IfModule>
+  <IfModule !mod_authz_core.c>
+    Order allow,deny
+    Deny from all
+  </IfModule>
+</FilesMatch>
+
+# ------------------------------------------------------------------
+# 2) Dossiers internes (bibliothèques, scripts d'installation, données)
+# ------------------------------------------------------------------
+RedirectMatch 404 ^/(lib|install|data|backups|tools)(/|$)
+
+# ------------------------------------------------------------------
+# 3) En-têtes de sécurité (le HSTS n'a de sens qu'en HTTPS)
+# ------------------------------------------------------------------
+<IfModule mod_headers.c>
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set X-Frame-Options "SAMEORIGIN"
+  Header always set Referrer-Policy "strict-origin-when-cross-origin"
+  Header always set Permissions-Policy "geolocation=(), microphone=(), camera=()"
+</IfModule>
+
+# ------------------------------------------------------------------
+# 4) Page d'erreur neutre (pas de fuite de chemins serveur)
+# ------------------------------------------------------------------
+ErrorDocument 403 "Acces refuse."
+ErrorDocument 404 "Page introuvable."

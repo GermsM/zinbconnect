@@ -10,6 +10,12 @@
  */
 declare(strict_types=1);
 
+// Script d'installation : jamais exécutable depuis le web.
+if (PHP_SAPI !== 'cli') {
+    http_response_code(403);
+    exit('Ce script doit être lancé en ligne de commande.');
+}
+
 $_SERVER['PHP_SELF'] = $_SERVER['PHP_SELF'] ?? 'cli';
 require_once __DIR__ . '/../lib/security.php';
 
