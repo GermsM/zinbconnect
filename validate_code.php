@@ -79,21 +79,16 @@ if ($state !== 'active') {
 
 $plan = plan_by_id((int)$ticket['subscription_id']);
 $remaining = ticket_remaining_seconds($ticket);
-$limit     = $ticket['data_limit_bytes'] !== null && $ticket['data_limit_bytes'] !== ''
-    ? (int)$ticket['data_limit_bytes']
-    : null;
 
 $_SESSION['access_code'] = $code;
 $_SESSION['code_expiry'] = $ticket['expires_at'];
 audit('code_validated', null, 'ticket=' . $ticket['id']);
 
+// Le client ne voit que sa durée : aucun volume de données dans la réponse.
 json_out([
     'valid'             => true,
-    'plan'              => $plan['name'] ?? '',
+    'plan'              => $plan ? plan_title($plan) : '',
     'expires_at'        => $ticket['expires_at'],
     'expires_at_fr'     => date('d/m/Y à H:i', strtotime((string)$ticket['expires_at'])),
     'remaining_seconds' => $remaining,
-    'data_limit'        => $limit,
-    'bytes_used'        => (int)$ticket['bytes_used'],
-    'remaining_bytes'   => ticket_remaining_bytes($ticket),
 ]);
