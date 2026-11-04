@@ -18,6 +18,7 @@ require_once __DIR__ . '/crypto.php';
 
 const TICKET_LABELS = [
     'available' => 'Non utilisé',
+    'sold'      => 'Vendu',
     'active'    => 'En cours',
     'used'      => 'Consommé',
     'expired'   => 'Expiré',
@@ -48,6 +49,7 @@ function plan_duration_seconds(array $plan): int
 function plan_by_id(int $id): ?array
 {
     $stmt = db()->prepare('SELECT * FROM subscriptions WHERE id = ?');
+
     $stmt->execute([$id]);
     $row = $stmt->fetch();
     return $row ?: null;
@@ -55,7 +57,12 @@ function plan_by_id(int $id): ?array
 
 function plans_all(): array
 {
-    return db()->query('SELECT * FROM subscriptions ORDER BY rate ASC, id ASC')->fetchAll();
+    $rows = db()->query('SELECT * FROM subscriptions ORDER BY rate ASC, id ASC')->fetchAll();
+    foreach ($rows as &$r) {
+        $r['title'] = plan_title($r);
+        $r['label'] = plan_label($r);
+    }
+    return $rows;
 }
 
 /**
@@ -70,7 +77,9 @@ function ticket_state(array $t, ?int $now = null): string
         return 'revoked';
     }
     $status = (string)($t['status'] ?? 'available');
-    if ($status === 'available') {
+    if ($status === 'available' || $status === 'sold') {
+        // « sold » = carte vendue par un revendeur, pas encore activée :
+        // le temps ne commence qu'à la première connexion du client.
         return 'available';
     }
     if ($status === 'used') {
@@ -92,15 +101,6 @@ function ticket_remaining_seconds(array $t, ?int $now = null): int
         return 0;
     }
     return max(0, strtotime((string)$t['expires_at']) - ($now ?? time()));
-}
-
-function ticket_remaining_bytes(array $t): ?int
-{
-    $limit = $t['data_limit_bytes'] ?? null;
-    if ($limit === null || $limit === '') {
-        return null;
-    }
-    return max(0, (int)$limit - (int)$t['bytes_used']);
 }
 
 /**
@@ -244,12 +244,14 @@ function activate_ticket(string $codeRaw, ?string $contact = null, ?int $reselle
     try {
         $db->beginTransaction();
 
-        // Verrou atomique : seule la première activation voit status='available'.
+        // Verrou atomique : seul le premier passage trouve encore un statut
+        // « disponible » (available) ou « vendu » (sold, pas encore activé).
         $upd = $db->prepare(
             "UPDATE tickets
-                SET status = 'active', activated_at = ?, expires_at = ?, contact = ?, contact_type = ?,
-                    data_limit_bytes = ?, reseller_id = ?
-              WHERE id = ? AND status = 'available' AND revoked_at IS NULL"
+                SET status = 'active', activated_at = ?, expires_at = ?,
+                    contact = COALESCE(?, contact), contact_type = COALESCE(?, contact_type),
+                    data_limit_bytes = ?, reseller_id = COALESCE(?, reseller_id)
+              WHERE id = ? AND status IN ('available','sold') AND revoked_at IS NULL"
         );
         $upd->execute([
             date('Y-m-d H:i:s', $now), $expires, $contact, $contactType,
@@ -261,19 +263,23 @@ function activate_ticket(string $codeRaw, ?string $contact = null, ?int $reselle
             return ['ok' => false, 'error' => 'alreadyUsed'];
         }
 
-        // Vente : une ligne dans transactions (historique et statistiques).
-        $commission = 0.0;
-        if ($resellerId !== null) {
-            $pct = (float)(setting('reseller_commission') ?? '25');
-            $commission = round(((float)$ticket['price']) * $pct / 100, 2);
+        // Vente : une ligne dans transactions, sauf si le revendeur a déjà
+        // encaissé cette carte (status « sold »).
+        $alreadySold = ($ticket['status'] ?? '') === 'sold';
+        if (!$alreadySold) {
+            $commission = 0.0;
+            if ($resellerId !== null) {
+                $pct = (float)(setting('reseller_commission') ?? '25');
+                $commission = round(((float)$ticket['price']) * $pct / 100, 2);
+            }
+            $db->prepare(
+                'INSERT INTO transactions (reseller_id, subscription_id, buyer_contact, access_code, amount, commission, created_at)
+                 VALUES (?,?,?,?,?,?,?)'
+            )->execute([
+                $resellerId, $ticket['subscription_id'], $contact,
+                normalize_code($codeRaw), (float)$ticket['price'], $commission, date('Y-m-d H:i:s', $now),
+            ]);
         }
-        $db->prepare(
-            'INSERT INTO transactions (reseller_id, subscription_id, buyer_contact, access_code, amount, commission, created_at)
-             VALUES (?,?,?,?,?,?,?)'
-        )->execute([
-            $resellerId, $ticket['subscription_id'], $contact,
-            normalize_code($codeRaw), (float)$ticket['price'], $commission, date('Y-m-d H:i:s', $now),
-        ]);
 
         $db->commit();
     } catch (Throwable $e) {
@@ -300,6 +306,92 @@ function activate_ticket(string $codeRaw, ?string $contact = null, ?int $reselle
         'remaining'   => plan_duration_seconds($plan),
         'data_limit'  => $limit,
         'error'       => null,
+    ];
+}
+
+/**
+ * Vente par un revendeur : la carte est marquée vendue et la commission est
+ * enregistrée, mais le compte à rebours NE démarre PAS.
+ * Le temps ne commence qu'à la première connexion du client sur le portail.
+ */
+function sell_ticket(string $codeRaw, ?string $contact, int $resellerId): array
+{
+    $ticket = ticket_by_code($codeRaw);
+    if (!$ticket) {
+        return ['ok' => false, 'error' => 'invalid'];
+    }
+    $state = ticket_state($ticket);
+    if ($state === 'revoked') {
+        return ['ok' => false, 'error' => 'revoked'];
+    }
+    if ($state !== 'available') {
+        return ['ok' => false, 'error' => $state === 'active' ? 'alreadyUsed' : $state];
+    }
+
+    $contactType = null;
+    if ($contact !== null && trim($contact) !== '') {
+        $contact = trim($contact);
+        if (preg_match('/^[\w\-.]+@([\w-]+\.)+[\w-]{2,4}$/', $contact)) {
+            $contactType = 'email';
+        } elseif (preg_match('/^\+?\d{7,15}$/', $contact)) {
+            $contactType = 'phone';
+            if (!str_starts_with($contact, '+')) {
+                $contact = '+243' . ltrim($contact, '0');
+            }
+        } else {
+            return ['ok' => false, 'error' => 'invalidContact'];
+        }
+    } else {
+        $contact = null;
+    }
+
+    $plan = plan_by_id((int)$ticket['subscription_id']);
+    if (!$plan) {
+        return ['ok' => false, 'error' => 'invalidSubscription'];
+    }
+
+    $db = db();
+    $commission = 0.0;
+    try {
+        $db->beginTransaction();
+        // Verrou atomique : une carte ne peut être vendue qu'une seule fois.
+        $upd = $db->prepare(
+            "UPDATE tickets SET status = 'sold', reseller_id = ?, contact = ?, contact_type = ?
+              WHERE id = ? AND status = 'available' AND revoked_at IS NULL"
+        );
+        $upd->execute([$resellerId, $contact, $contactType, $ticket['id']]);
+        if ($upd->rowCount() !== 1) {
+            $db->rollback();
+            return ['ok' => false, 'error' => 'alreadyUsed'];
+        }
+
+        $pct = (float)(setting('reseller_commission') ?? '25');
+        $commission = round(((float)$ticket['price']) * $pct / 100, 2);
+        $db->prepare(
+            'INSERT INTO transactions (reseller_id, subscription_id, buyer_contact, access_code, amount, commission, created_at)
+             VALUES (?,?,?,?,?,?,?)'
+        )->execute([
+            $resellerId, $ticket['subscription_id'], $contact,
+            normalize_code($codeRaw), (float)$ticket['price'], $commission, date('Y-m-d H:i:s'),
+        ]);
+        $db->commit();
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) {
+            $db->rollback();
+        }
+        audit('ticket_sell_error', 'reseller:' . $resellerId, $e->getMessage());
+        return ['ok' => false, 'error' => 'activationFailed'];
+    }
+
+    audit('ticket_sold', 'reseller:' . $resellerId, 'ticket=' . $ticket['id'] . ' forfait=' . plan_title($plan));
+
+    return [
+        'ok'         => true,
+        'ticket'     => $ticket,
+        'plan'       => $plan,
+        'price'      => (float)$ticket['price'],
+        'commission' => $commission,
+        'error'      => null,
     ];
 }
 
@@ -337,6 +429,10 @@ function batch_tickets(int $batchId): array
     foreach ($rows as &$r) {
         $r['code_plain'] = code_decrypt($r['code_enc'] ?? null);
         $r['state']      = ticket_state($r);
+        if ($r['state'] === 'available' && ($r['status'] ?? '') === 'sold') {
+            $r['state'] = 'sold';
+        }
+        $r['plan_title'] = plan_title($r);
     }
     return $rows;
 }
@@ -352,14 +448,18 @@ function batch_by_id(int $id): ?array
 function batches_recent(int $limit = 30): array
 {
     $stmt = db()->prepare(
-        "SELECT b.*, s.name AS plan_name,
+        "SELECT b.*, s.name AS plan_name, s.duration_minutes, s.duration_days,
                 (SELECT COUNT(*) FROM tickets t WHERE t.batch_id = b.id) AS tickets_count,
                 (SELECT COUNT(*) FROM tickets t WHERE t.batch_id = b.id AND t.status <> 'available') AS tickets_used
          FROM batches b LEFT JOIN subscriptions s ON s.id = b.subscription_id
          ORDER BY b.id DESC LIMIT ?"
     );
     $stmt->execute([$limit]);
-    return $stmt->fetchAll();
+    $rows = $stmt->fetchAll();
+    foreach ($rows as &$r) {
+        $r['plan_title'] = plan_title($r);
+    }
+    return $rows;
 }
 
 /** Recherche : code exact d'abord, sinon contact / référence de lot / note. */
@@ -372,7 +472,11 @@ function search_tickets(string $q, int $limit = 60): array
     $byCode = ticket_by_code($q);
     if ($byCode) {
         $byCode['state'] = ticket_state($byCode);
+        if ($byCode['state'] === 'available' && ($byCode['status'] ?? '') === 'sold') {
+            $byCode['state'] = 'sold';
+        }
         $byCode['code_plain'] = code_decrypt($byCode['code_enc'] ?? null);
+        $byCode['plan_title'] = plan_title($byCode);
         return [$byCode];
     }
 
@@ -389,7 +493,11 @@ function search_tickets(string $q, int $limit = 60): array
     $rows = $stmt->fetchAll();
     foreach ($rows as &$r) {
         $r['state'] = ticket_state($r);
+        if ($r['state'] === 'available' && ($r['status'] ?? '') === 'sold') {
+            $r['state'] = 'sold';
+        }
         $r['code_plain'] = code_decrypt($r['code_enc'] ?? null);
+        $r['plan_title'] = plan_title($r);
     }
     return $rows;
 }
@@ -410,6 +518,7 @@ function active_sessions(int $limit = 100): array
         $r['state'] = ticket_state($r);
         if ($r['state'] === 'active') {
             $r['code_plain'] = code_decrypt($r['code_enc'] ?? null);
+            $r['plan_title'] = plan_title($r);
             $out[] = $r;
         }
     }
@@ -436,12 +545,16 @@ function sales_stats(): array
         $out[$key] = ['total' => (float)$row['total'], 'count' => (int)$row['nb']];
     }
 
-    $out['by_plan'] = $db->query(
-        "SELECT s.name, COUNT(*) nb, COALESCE(SUM(tr.amount),0) total
+    $byPlan = $db->query(
+        "SELECT s.id, s.name, s.duration_minutes, s.duration_days, COUNT(*) nb, COALESCE(SUM(tr.amount),0) total
          FROM transactions tr JOIN subscriptions s ON s.id = tr.subscription_id
          WHERE tr.created_at >= '" . $ranges['month'] . "'
-         GROUP BY s.name ORDER BY total DESC"
+         GROUP BY s.id, s.name, s.duration_minutes, s.duration_days ORDER BY total DESC"
     )->fetchAll();
+    foreach ($byPlan as &$p) {
+        $p['title'] = plan_title($p);
+    }
+    $out['by_plan'] = $byPlan;
 
     return $out;
 }
@@ -481,28 +594,17 @@ function usage_estimate_tickets(): array
     ];
 }
 
-/** Enregistre (ou met à jour) la consommation d'un jour pour une source. */
-function record_usage(string $date, int $bytesDown, int $bytesUp, string $source = 'router'): void
-{
-    $db = db();
-    $upd = $db->prepare('UPDATE usage_samples SET bytes_down = ?, bytes_up = ?, created_at = ? WHERE sample_date = ? AND source = ?');
-    $upd->execute([max(0, $bytesDown), max(0, $bytesUp), date('Y-m-d H:i:s'), $date, $source]);
-    if ($upd->rowCount() === 0) {
-        $chk = $db->prepare('SELECT 1 FROM usage_samples WHERE sample_date = ? AND source = ?');
-        $chk->execute([$date, $source]);
-        if (!$chk->fetchColumn()) {
-            $db->prepare('INSERT INTO usage_samples (sample_date, bytes_down, bytes_up, source, created_at) VALUES (?,?,?,?,?)')
-               ->execute([$date, max(0, $bytesDown), max(0, $bytesUp), $source, date('Y-m-d H:i:s')]);
-        }
-    }
-}
-
 /** Nombre de tickets encore disponibles par forfait (alerte de stock). */
 function stock_by_plan(): array
 {
-    return db()->query(
-        "SELECT s.id, s.name, COUNT(t.id) available
+    $rows = db()->query(
+        "SELECT s.id, s.name, s.rate, s.duration_minutes, s.duration_days, COUNT(t.id) available
          FROM subscriptions s LEFT JOIN tickets t ON t.subscription_id = s.id AND t.status = 'available'
-         GROUP BY s.id, s.name ORDER BY s.rate ASC"
+         GROUP BY s.id, s.name, s.rate, s.duration_minutes, s.duration_days ORDER BY s.rate ASC"
     )->fetchAll();
+    foreach ($rows as &$r) {
+        $r['title'] = plan_title($r);
+        $r['label'] = plan_label($r);
+    }
+    return $rows;
 }
