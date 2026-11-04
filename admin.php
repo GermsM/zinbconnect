@@ -29,6 +29,59 @@ if (empty($_SESSION['admin_id'])) {
 $adminId = (int)$_SESSION['admin_id'];
 $actor   = 'admin:' . $adminId;
 
+/**
+ * Téléchargement du PDF d'un lot, en GET.
+ * Le fichier est envoyé tel quel (plus de base64 côté navigateur) : c'est ce
+ * qui provoquait le gel de l'écran sur les gros lots.
+ */
+if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['pdf'])) {
+    $batch = batch_by_id((int)$_GET['pdf']);
+    if (!$batch) {
+        http_response_code(404);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo 'Lot introuvable.';
+        exit;
+    }
+
+    $tickets = [];
+    $missing = 0;
+    foreach (batch_tickets((int)$batch['id']) as $row) {
+        if (empty($row['code_plain'])) {
+            $missing++;
+            continue;
+        }
+        $tickets[] = [
+            'code'     => $row['code_plain'],
+            'plan'     => $row['plan_title'],
+            'price'    => (float)$row['price'],
+            'duration' => plan_duration_label($row),
+        ];
+    }
+
+    if (!$tickets) {
+        http_response_code(409);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo 'Aucun code lisible dans ce lot (clé APP_KEY absente ou lot vide).';
+        exit;
+    }
+
+    set_time_limit(120);
+    $pdf = pdf_ticket_sheet($tickets, [
+        'portal_name' => setting('portal_name') ?? 'Zinbconnect',
+        'portal_url'  => setting('portal_url', ''),
+        'batch'       => $batch['reference'],
+        'date'        => date('d/m/Y'),
+    ]);
+    audit('batch_printed', $actor, 'lot=' . $batch['reference'] . ' tickets=' . count($tickets));
+
+    header('Content-Type: application/pdf');
+    header('Content-Disposition: attachment; filename="tickets_' . $batch['reference'] . '.pdf"');
+    header('Content-Length: ' . strlen($pdf));
+    header('Cache-Control: no-store');
+    echo $pdf;
+    exit;
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $input  = json_input();
     csrf_require($input);
@@ -48,10 +101,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $quota    = max(1, (int)$usage['quota']);
 
             $recent = db()->query(
-                'SELECT tr.id, tr.amount, tr.created_at, tr.buyer_contact, s.name AS plan_name
+                'SELECT tr.id, tr.amount, tr.created_at, tr.buyer_contact,
+                        s.name AS plan_name, s.duration_minutes, s.duration_days
                  FROM transactions tr LEFT JOIN subscriptions s ON s.id = tr.subscription_id
                  ORDER BY tr.id DESC LIMIT 8'
             )->fetchAll();
+            foreach ($recent as &$row) {
+                $row['plan_title'] = plan_title($row);
+            }
+            unset($row);
 
             json_out([
                 'success'    => true,
@@ -123,8 +181,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
             db()->prepare('UPDATE subscriptions SET rate = ?, duration_minutes = ?, duration_days = ?, data_limit_bytes = ? WHERE id = ?')
                 ->execute([$rate, $minutes ?: null, $days ?: null, $limit, $id]);
-            audit('plan_updated', $actor, 'plan=' . $id . ' plafond=' . ($limit ? format_bytes($limit) : 'illimité'));
-            json_out(['success' => true]);
+
+            $updated = plan_by_id($id);
+            audit('plan_updated', $actor, 'forfait=' . ($updated ? plan_label($updated) : $id) . ' plafond=' . ($limit ? format_bytes($limit) : 'illimité'));
+            // On renvoie la liste complète : le navigateur n'a rien à recalculer.
+            json_out([
+                'success' => true,
+                'label'   => $updated ? plan_label($updated) : '',
+                'plans'   => plans_all(),
+            ]);
 
         case 'save_settings':
             $map = [
@@ -225,7 +290,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
                 $csv .= implode(';', [
                     $r['code_plain'],
-                    str_replace(';', ',', (string)$r['plan_name']),
+                    str_replace(';', ',', (string)$r['plan_title']),
                     number_format((float)$r['price'], 0, ',', ''),
                     $r['data_limit_bytes'] ? (string)round((int)$r['data_limit_bytes'] / 1048576) : '',
                     $batch['reference'],
@@ -238,48 +303,98 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'csv'      => $csv,
             ]);
 
-        case 'print_batch':
+        case 'delete_batch':
             $batchId = (int)($input['batch_id'] ?? 0);
             $batch = batch_by_id($batchId);
             if (!$batch) {
                 json_out(['success' => false, 'message' => 'invalidBatch']);
             }
-            $rows = batch_tickets($batchId);
-            $tickets = [];
-            $missing = 0;
-            foreach ($rows as $r) {
-                if (empty($r['code_plain'])) {
-                    $missing++;
-                    continue;
+            $db = db();
+            $stmt = $db->prepare("SELECT COUNT(*) FROM tickets WHERE batch_id = ? AND status <> 'available'");
+            $stmt->execute([$batchId]);
+            $used = (int)$stmt->fetchColumn();
+            if ($used > 0) {
+                json_out(['success' => false, 'message' => 'batchInUse', 'used' => $used]);
+            }
+            try {
+                $db->beginTransaction();
+                $db->prepare('DELETE FROM tickets WHERE batch_id = ?')->execute([$batchId]);
+                $db->prepare('DELETE FROM batches WHERE id = ?')->execute([$batchId]);
+                $db->commit();
+            } catch (Throwable $e) {
+                if ($db->inTransaction()) {
+                    $db->rollback();
                 }
-                $plan = [
-                    'duration_minutes' => $r['duration_minutes'] ?? null,
-                    'duration_days'    => $r['duration_days'] ?? null,
-                ];
-                $tickets[] = [
-                    'code'     => $r['code_plain'],
-                    'plan'     => (string)$r['plan_name'],
-                    'price'    => (float)$r['price'],
-                    'limit'    => $r['data_limit_bytes'] !== null ? (int)$r['data_limit_bytes'] : null,
-                    'duration' => format_duration(plan_duration_seconds($plan)),
-                ];
+                audit('batch_delete_error', $actor, $e->getMessage());
+                json_out(['success' => false, 'message' => 'deleteFailed']);
             }
-            if (!$tickets) {
-                json_out(['success' => false, 'message' => 'noCodes', 'missing' => $missing]);
+            audit('batch_deleted', $actor, 'lot=' . $batch['reference'] . ' tickets=' . (int)$batch['quantity']);
+            json_out(['success' => true]);
+
+        case 'change_password':
+            $current = (string)($input['current'] ?? '');
+            $new     = (string)($input['new'] ?? '');
+            $confirm = (string)($input['confirm'] ?? '');
+            if ($new !== $confirm) {
+                json_out(['success' => false, 'message' => 'mismatch']);
             }
-            $pdf = pdf_ticket_sheet($tickets, [
-                'portal_name' => setting('portal_name') ?? 'Zinbconnect',
-                'portal_url'  => setting('portal_url', ''),
-                'batch'       => $batch['reference'],
-                'date'        => date('d/m/Y'),
-            ]);
-            audit('batch_printed', $actor, 'lot=' . $batch['reference'] . ' tickets=' . count($tickets));
-            json_out([
-                'success'  => true,
-                'filename' => 'tickets_' . $batch['reference'] . '.pdf',
-                'pdf'      => base64_encode($pdf),
-                'missing'  => $missing,
-            ]);
+            if (strlen($new) < 10) {
+                json_out(['success' => false, 'message' => 'tooShort']);
+            }
+            $stmt = db()->prepare('SELECT password FROM admins WHERE id = ?');
+            $stmt->execute([$adminId]);
+            $hash = (string)$stmt->fetchColumn();
+            if ($hash === '' || !password_verify($current, $hash)) {
+                audit('admin_password_change_failed', $actor, 'mot de passe actuel erroné');
+                json_out(['success' => false, 'message' => 'wrongPassword']);
+            }
+            if (password_verify($new, $hash)) {
+                json_out(['success' => false, 'message' => 'samePassword']);
+            }
+            db()->prepare('UPDATE admins SET password = ? WHERE id = ?')
+                ->execute([password_hash($new, PASSWORD_DEFAULT), $adminId]);
+            session_regenerate_id(true);
+            $_SESSION['csrf'] = bin2hex(random_bytes(32));
+            audit('admin_password_changed', $actor, null);
+            json_out(['success' => true, 'csrf' => $_SESSION['csrf']]);
+
+        case 'reset_system':
+            $password = (string)($input['password'] ?? '');
+            $confirm  = strtoupper(trim((string)($input['confirm'] ?? '')));
+            if ($confirm !== 'EFFACER') {
+                json_out(['success' => false, 'message' => 'confirmRequired']);
+            }
+            $stmt = db()->prepare('SELECT password FROM admins WHERE id = ?');
+            $stmt->execute([$adminId]);
+            $hash = (string)$stmt->fetchColumn();
+            if ($hash === '' || !password_verify($password, $hash)) {
+                audit('reset_refused', $actor, 'mot de passe erroné');
+                json_out(['success' => false, 'message' => 'wrongPassword']);
+            }
+            $safety = db_backup_to_file('before_reset');
+            if ($safety === null) {
+                json_out(['success' => false, 'message' => 'backupFailed']);
+            }
+            $db = db();
+            $tables = ['tickets', 'batches', 'transactions', 'current_codes', 'access_codes', 'usage_samples', 'rate_limits', 'audit_log'];
+            try {
+                $db->beginTransaction();
+                foreach ($tables as $table) {
+                    try {
+                        $db->exec('DELETE FROM ' . $table);
+                    } catch (Throwable $e) {
+                        // table absente sur une base ancienne : on continue
+                    }
+                }
+                $db->commit();
+            } catch (Throwable $e) {
+                if ($db->inTransaction()) {
+                    $db->rollback();
+                }
+                json_out(['success' => false, 'message' => 'resetFailed']);
+            }
+            audit('system_reset', $actor, 'sauvegarde=' . basename($safety));
+            json_out(['success' => true, 'safety_file' => basename($safety)]);
     }
 
     json_out(['success' => false, 'message' => 'unknownAction'], 400);
@@ -334,6 +449,7 @@ th{font-size:11px;text-transform:uppercase;color:var(--muted);letter-spacing:.3p
 .s-available{background:#ede9fe;color:#5b21b6}
 .s-active{background:#dcfce7;color:#166534}
 .s-used{background:#fef3c7;color:#92400e}
+.s-sold{background:#e0f2fe;color:#075985}
 .s-expired{background:#f3f4f6;color:#4b5563}
 .s-revoked{background:#fee2e2;color:#991b1b}
 .bar{height:9px;background:#e5e7eb;border-radius:99px;overflow:hidden;margin-top:6px}
@@ -349,7 +465,34 @@ th{font-size:11px;text-transform:uppercase;color:var(--muted);letter-spacing:.3p
 .pill{display:inline-block;background:#f5f3ff;border:1px solid #ddd6fe;color:#5b21b6;border-radius:8px;padding:4px 9px;font-size:12px;margin:2px 4px 2px 0}
 dialog{border:0;border-radius:14px;padding:0;width:min(92vw,420px);box-shadow:0 10px 40px rgba(0,0,0,.25)}
 dialog .body{padding:18px}
-dialog::backdrop{background:rgba(0,0,0,.45)}
+dialog::backdrop{background:rgba(0,0,0,.45);backdrop-filter:blur(2px)}
+
+/* --- finitions --- */
+section.active{animation:rise .28s ease both}
+@keyframes rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+@keyframes pop{from{opacity:0;transform:scale(.97)}to{opacity:1;transform:none}}
+@keyframes sp{to{transform:rotate(360deg)}}
+.kpi{transition:transform .2s ease,box-shadow .2s ease}
+.kpi:hover{transform:translateY(-2px);box-shadow:0 6px 18px rgba(76,29,149,.10)}
+.kpi strong{background:linear-gradient(135deg,#5b21b6,#7c3aed);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+button.primary{background:linear-gradient(135deg,#5b21b6,#7c3aed);box-shadow:0 4px 12px rgba(91,33,182,.22);transition:transform .12s ease,box-shadow .2s,opacity .2s}
+button.primary:active{transform:scale(.985)}
+button.ghost,button.danger{transition:filter .15s ease,transform .12s ease}
+button.ghost:active,button.danger:active{transform:scale(.985)}
+nav button{transition:background .2s ease,color .2s ease}
+nav button:hover{background:rgba(255,255,255,.22)}
+.chip{animation:pop .25s ease both}
+.pw{position:relative}
+.pw input{padding-right:46px}
+.pw .eye{position:absolute;right:5px;top:50%;transform:translateY(-50%);background:none;border:0;font-size:17px;line-height:1;padding:8px;cursor:pointer;color:#6b7280;border-radius:8px}
+.pw .eye:active{background:#f3f4f6}
+.loading{position:fixed;inset:0;background:rgba(243,244,246,.72);backdrop-filter:blur(2px);display:none;align-items:center;justify-content:center;z-index:60}
+.loading.on{display:flex;animation:pop .15s ease both}
+.loading .box{background:#fff;border-radius:14px;padding:18px 22px;box-shadow:0 10px 40px rgba(0,0,0,.18);text-align:center;font-size:14px;font-weight:600;color:#4c1d95;max-width:78vw}
+.spin{width:26px;height:26px;border:3px solid #ddd6fe;border-top-color:#5b21b6;border-radius:50%;margin:0 auto 10px;animation:sp 1s linear infinite}
+.note{background:#faf5ff;border:1px solid #ede9fe;border-radius:10px;padding:10px 12px;font-size:12.5px;color:#4c1d95;margin-top:10px;line-height:1.45}
+.danger-zone{border:1px solid #fecaca;background:#fffafa}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
 </head>
 <body>
@@ -417,6 +560,7 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
           <div>
             <label for="gen-qty">Quantité</label>
             <input id="gen-qty" type="number" min="1" max="1000" value="20" required>
+            <p class="muted" style="margin:4px 0 0">Au-delà de 300 tickets, le PDF prend quelques secondes.</p>
           </div>
           <div>
             <label for="gen-price">Prix unitaire (FC)</label>
@@ -503,6 +647,8 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
     <div class="card scroll">
       <table><thead><tr><th>Forfait</th><th>Prix (FC)</th><th>Durée</th><th>Plafond (Mo)</th><th></th></tr></thead><tbody id="plans-body"></tbody></table>
       <p class="muted">Plafond vide = illimité. Valeurs conseillées : 1 h = 100 Mo, 12 h = 300 Mo, 24 h = 500 Mo, 3 j = 1 024 Mo.</p>
+      <p class="note">Le plafond est un garde-fou technique : il n'apparaît <strong>jamais</strong> sur le portail, sur la carte imprimée ni après la saisie du code. Le client voit uniquement « illimité » pendant la durée de son forfait. Modifier un prix ici le met à jour partout (portail, tickets, ventes) immédiatement.</p>
+      <div class="msg" id="plansMsg"></div>
     </div>
 
     <h2>Portail et Starlink</h2>
@@ -511,7 +657,8 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
         <label for="s-name">Nom du portail</label>
         <input id="s-name" type="text" maxlength="80">
         <label for="s-url">Adresse du portail (pour les QR codes)</label>
-        <input id="s-url" type="url" placeholder="https://portail.exemple.cd/index.php">
+        <input id="s-url" type="url" placeholder="http://10.5.50.1/login">
+        <p class="note">C'est l'adresse que contiendra chaque QR code imprimé. Un client qui scanne la carte arrive directement sur le portail avec son code déjà rempli. Mettez l'adresse que le téléphone atteint <strong>une fois connecté au Wi-Fi</strong> (l'adresse du portail sur le routeur, par exemple <code>http://10.5.50.1/login</code>), et non une adresse Internet. Laissez vide si vous ne savez pas encore : le QR contiendra seulement le code, à taper à la main.</p>
         <div class="row2">
           <div>
             <label for="s-quota">Forfait Starlink (Go/mois)</label>
@@ -528,6 +675,20 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
         </div>
         <div class="actions"><button class="primary" type="submit">Enregistrer</button></div>
         <div class="msg" id="settingsMsg"></div>
+      </form>
+    </div>
+
+    <h2>Mon compte</h2>
+    <div class="card">
+      <form id="pwForm">
+        <label for="pw-cur">Mot de passe actuel</label>
+        <input id="pw-cur" type="password" autocomplete="current-password" required>
+        <label for="pw-new">Nouveau mot de passe (10 caractères minimum)</label>
+        <input id="pw-new" type="password" autocomplete="new-password" minlength="10" required>
+        <label for="pw-conf">Confirmer le nouveau mot de passe</label>
+        <input id="pw-conf" type="password" autocomplete="new-password" minlength="10" required>
+        <div class="actions"><button class="primary" type="submit">Changer le mot de passe</button></div>
+        <div class="msg" id="pwMsg"></div>
       </form>
     </div>
   </section>
@@ -553,6 +714,18 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
       </div>
       <div class="msg" id="restoreMsg"></div>
     </div>
+
+    <h2>Réinitialisation complète</h2>
+    <div class="card danger-zone">
+      <p><strong>Effacer toutes les données et repartir de zéro :</strong> tickets, lots, ventes, sessions, consommation, journal et compteurs de sécurité. Les comptes (administrateur, revendeurs), les forfaits et les réglages sont conservés.</p>
+      <p class="muted">Une sauvegarde automatique de la base est enregistrée dans le dossier <code>backups/</code> avant l'effacement. Action irréversible.</p>
+      <label for="reset-pass">Votre mot de passe administrateur</label>
+      <input id="reset-pass" type="password" autocomplete="current-password">
+      <label for="reset-confirm">Tapez EFFACER pour confirmer</label>
+      <input id="reset-confirm" type="text" placeholder="EFFACER" autocomplete="off">
+      <div class="actions"><button class="danger" id="resetBtn" type="button">Tout effacer</button></div>
+      <div class="msg" id="resetMsg"></div>
+    </div>
   </section>
 
   <!-- ============ JOURNAL ============ -->
@@ -563,6 +736,10 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
     </div>
   </section>
 </main>
+
+<div class="loading" id="loading" role="status" aria-live="polite">
+  <div class="box"><div class="spin"></div><div id="loadingText">Traitement en cours…</div></div>
+</div>
 
 <dialog id="confirmDlg">
   <div class="body">
@@ -616,14 +793,55 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
     el.textContent = text;
   }
 
-  async function api(action, payload) {
-    var res = await fetch('admin.php', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json', 'X-CSRF-Token': csrf},
-      body: JSON.stringify(Object.assign({action: action, csrf: csrf}, payload || {}))
-    });
-    if (res.status === 403) { location.reload(); throw new Error('session'); }
-    return res.json();
+  var busyCount = 0;
+  function busy(on, text) {
+    busyCount += on ? 1 : -1;
+    if (busyCount > 0) {
+      $('loadingText').textContent = text || 'Traitement en cours…';
+      $('loading').classList.add('on');
+    } else {
+      busyCount = 0;
+      $('loading').classList.remove('on');
+    }
+  }
+
+  async function api(action, payload, timeoutMs) {
+    var ctrl = new AbortController();
+    var to = setTimeout(function () { ctrl.abort(); }, timeoutMs || 60000);
+    try {
+      var res = await fetch('admin.php', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', 'X-CSRF-Token': csrf},
+        body: JSON.stringify(Object.assign({action: action, csrf: csrf}, payload || {})),
+        signal: ctrl.signal
+      });
+      if (res.status === 403) { location.reload(); throw new Error('session'); }
+      return await res.json();
+    } finally {
+      clearTimeout(to);
+    }
+  }
+
+  /** Télécharge le PDF d'un lot sans base64 (aucun blocage de l'écran). */
+  async function downloadPdf(batchId) {
+    busy(true, 'Préparation du PDF…');
+    try {
+      var res = await fetch('admin.php?pdf=' + encodeURIComponent(batchId), {headers: {'Accept': 'application/pdf'}});
+      if (!res.ok) {
+        var txt = await res.text();
+        throw new Error(txt || ('Erreur ' + res.status));
+      }
+      var cd = res.headers.get('Content-Disposition') || '';
+      var m = /filename="([^"]+)"/.exec(cd);
+      var blob = await res.blob();
+      download(m ? m[1] : ('tickets_' + batchId + '.pdf'), blob, 'application/pdf');
+      return true;
+    } catch (err) {
+      alert(err.message || 'PDF impossible.');
+      return false;
+    } finally {
+      busy(false);
+    }
   }
 
   function download(filename, content, type) {
@@ -695,13 +913,13 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
 
     $('stock-body').innerHTML = d.stock.map(function (s) {
       var low = Number(s.available) <= d.low_stock;
-      return '<tr><td>' + esc(s.name) + '</td><td>' + esc(s.available) +
+      return '<tr><td>' + esc(s.title) + '</td><td>' + esc(s.available) +
         ' ' + (low ? '<span class="chip s-used">stock bas</span>' : '') + '</td></tr>';
     }).join('') || '<tr><td colspan="2" class="muted">Aucun forfait</td></tr>';
     $('stock-note').textContent = 'Seuil d\'alerte : ' + d.low_stock + ' tickets.';
 
     $('recent-body').innerHTML = d.recent.map(function (r) {
-      return '<tr><td>' + dt(r.created_at) + '</td><td>' + esc(r.plan_name || '—') + '</td><td>' + fc(r.amount) + '</td></tr>';
+      return '<tr><td>' + dt(r.created_at) + '</td><td>' + esc(r.plan_title || '—') + '</td><td>' + fc(r.amount) + '</td></tr>';
     }).join('') || '<tr><td colspan="3" class="muted">Aucune vente enregistrée</td></tr>';
   }
 
@@ -709,26 +927,61 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
     api('dashboard').then(function (d) {
       if (!d.success) return;
       $('sales-body').innerHTML = (d.sales.by_plan || []).map(function (p) {
-        return '<tr><td>' + esc(p.name) + '</td><td>' + p.nb + '</td><td>' + fc(p.total) + '</td></tr>';
+        return '<tr><td>' + esc(p.title) + '</td><td>' + p.nb + '</td><td>' + fc(p.total) + '</td></tr>';
       }).join('') || '<tr><td colspan="3" class="muted">Aucune vente ce mois</td></tr>';
     });
   }
 
   // ---------- Forfaits ----------
+  /** Recale le nom et le prix affichés partout (liste, sélecteur de lot). */
+  function syncPlanLabels(plans) {
+    state.plans = plans || [];
+    var current = $('gen-plan').value;
+    $('gen-plan').innerHTML = state.plans.map(function (p) {
+      return '<option value="' + p.id + '" data-rate="' + p.rate + '">' + esc(p.label) + '</option>';
+    }).join('');
+    if (current) $('gen-plan').value = current;
+    Array.prototype.forEach.call(document.querySelectorAll('#plans-body tr'), function (tr) {
+      var p = state.plans.filter(function (x) { return String(x.id) === tr.dataset.id; })[0];
+      if (p) tr.querySelector('.p-name').textContent = p.title;
+    });
+  }
+
+  function bindPlanSaves() {
+    Array.prototype.forEach.call(document.querySelectorAll('.p-save'), function (btn) {
+      btn.onclick = async function () {
+        var tr = btn.closest('tr');
+        btn.disabled = true;
+        try {
+          var r = await api('save_plan', {
+            id: tr.dataset.id,
+            rate: tr.querySelector('.p-rate').value,
+            duration_minutes: tr.querySelector('.p-min').value,
+            duration_days: tr.querySelector('.p-days').value,
+            data_limit_mb: tr.querySelector('.p-limit').value
+          });
+          if (r.success) {
+            showMsg($('plansMsg'), 'Forfait enregistré : ' + (r.label || '') + '. Le portail et les tickets affichent déjà ce prix.', true);
+            syncPlanLabels(r.plans || []);
+          } else {
+            showMsg($('plansMsg'), r.message === 'invalidDuration' ? 'Indiquez une durée en minutes ou en jours.' : 'Enregistrement impossible.', false);
+          }
+        } catch (err) {
+          showMsg($('plansMsg'), 'Le serveur ne répond pas. Réessayez.', false);
+        }
+        btn.disabled = false;
+      };
+    });
+  }
+
   async function loadPlans() {
     var d = await api('plans');
     if (!d.success) return;
-    state.plans = d.plans;
-    $('gen-plan').innerHTML = d.plans.map(function (p) {
-      return '<option value="' + p.id + '" data-rate="' + p.rate + '">' + esc(p.name) + ' — ' + fc(p.rate) + '</option>';
-    }).join('');
-    if (!$('gen-price').value && d.plans.length) $('gen-price').value = d.plans[0].rate;
-
     $('plans-body').innerHTML = d.plans.map(function (p) {
       var mins = Number(p.duration_minutes || 0), days = Number(p.duration_days || 0);
       var limitMb = p.data_limit_bytes ? Math.round(Number(p.data_limit_bytes) / 1048576) : '';
       return '<tr data-id="' + p.id + '">' +
-        '<td>' + esc(p.name) + '</td>' +
+        '<td class="p-name">' + esc(p.title) + '</td>' +
         '<td><input class="p-rate" type="number" min="0" step="100" value="' + p.rate + '" style="width:90px"></td>' +
         '<td><div style="display:flex;gap:4px">' +
           '<input class="p-min" type="number" min="0" value="' + mins + '" style="width:64px" title="minutes">min ' +
@@ -737,21 +990,9 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
         '<td><button class="ghost p-save" type="button">OK</button></td>' +
       '</tr>';
     }).join('');
-
-    Array.prototype.forEach.call(document.querySelectorAll('.p-save'), function (btn) {
-      btn.onclick = async function () {
-        var tr = btn.closest('tr');
-        var r = await api('save_plan', {
-          id: tr.dataset.id,
-          rate: tr.querySelector('.p-rate').value,
-          duration_minutes: tr.querySelector('.p-min').value,
-          duration_days: tr.querySelector('.p-days').value,
-          data_limit_mb: tr.querySelector('.p-limit').value
-        });
-        btn.textContent = r.success ? '✓' : '✗';
-        if (r.success) { loadPlans(); setTimeout(function () { btn.textContent = 'OK'; }, 1200); }
-      };
-    });
+    syncPlanLabels(d.plans);
+    if (!$('gen-price').value && d.plans.length) $('gen-price').value = d.plans[0].rate;
+    bindPlanSaves();
   }
 
   $('gen-plan').addEventListener('change', function () {
@@ -762,37 +1003,34 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
   // ---------- Génération de lot ----------
   $('genForm').addEventListener('submit', async function (e) {
     e.preventDefault();
+    var qty = Number($('gen-qty').value);
     $('genBtn').disabled = true;
-    var payload = {
-      subscription_id: Number($('gen-plan').value),
-      quantity: Number($('gen-qty').value),
-      unit_price: $('gen-price').value,
-      note: $('gen-note').value
-    };
-    var r = await api('generate_batch', payload);
-    $('genBtn').disabled = false;
-    if (!r.ok) {
-      showMsg($('genMsg'), 'Génération impossible. Vérifiez le forfait et la quantité.', false);
-      return;
+    busy(true, 'Génération de ' + qty + ' ticket(s)…');
+    try {
+      var r = await api('generate_batch', {
+        subscription_id: Number($('gen-plan').value),
+        quantity: qty,
+        unit_price: $('gen-price').value,
+        note: $('gen-note').value
+      }, 180000);
+      if (!r.ok) {
+        showMsg($('genMsg'), 'Génération impossible. Vérifiez le forfait et la quantité.', false);
+      } else {
+        state.lastBatch = r.batch_id;
+        showMsg($('genMsg'), 'Lot ' + r.reference + ' : ' + r.codes.length + ' ticket(s) générés. Téléchargez le PDF avant de fermer.', true);
+        $('genResult').style.display = 'flex';
+        loadBatches();
+        loadDashboard();
+      }
+    } catch (err) {
+      showMsg($('genMsg'), 'Le serveur n\'a pas répondu à temps. Vérifiez la quantité, puis réessayez.', false);
     }
-    state.lastBatch = r.batch_id;
-    showMsg($('genMsg'), 'Lot ' + r.reference + ' : ' + r.codes.length + ' ticket(s) générés. Imprimez le PDF avant de fermer.', true);
-    $('genResult').style.display = 'flex';
-    loadBatches();
-    loadDashboard();
+    busy(false);
+    $('genBtn').disabled = false;
   });
 
-  $('printBtn').onclick = async function () {
-    if (!state.lastBatch) return;
-    $('printBtn').disabled = true;
-    var r = await api('print_batch', {batch_id: state.lastBatch});
-    $('printBtn').disabled = false;
-    if (!r.success) { showMsg($('genMsg'), 'PDF impossible : les codes de ce lot ne sont pas déchiffrables (APP_KEY absente ?).', false); return; }
-    var bin = atob(r.pdf);
-    var arr = new Uint8Array(bin.length);
-    for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-    download(r.filename, new Blob([arr], {type: 'application/pdf'}));
-    if (r.missing) showMsg($('genMsg'), r.missing + ' ticket(s) sans code déchiffrable ont été ignorés.', false);
+  $('printBtn').onclick = function () {
+    if (state.lastBatch) downloadPdf(state.lastBatch);
   };
 
   $('csvBtn').onclick = async function () {
@@ -807,17 +1045,29 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
     if (!d.success) return;
     $('batches-body').innerHTML = d.batches.map(function (b) {
       return '<tr><td>' + esc(b.reference) + '<div class="muted">' + dt(b.created_at) + '</div></td>' +
-        '<td>' + esc(b.plan_name || '—') + '</td>' +
+        '<td>' + esc(b.plan_title || '—') + '</td>' +
         '<td>' + b.tickets_count + '</td><td>' + b.tickets_used + '</td>' +
-        '<td><button class="ghost b-print" type="button" data-id="' + b.id + '">PDF</button></td></tr>';
+        '<td><button class="ghost b-print" type="button" data-id="' + b.id + '">PDF</button> ' +
+        '<button class="danger b-del" type="button" data-id="' + b.id + '">Suppr.</button></td></tr>';
     }).join('') || '<tr><td colspan="5" class="muted">Aucun lot</td></tr>';
     Array.prototype.forEach.call(document.querySelectorAll('.b-print'), function (btn) {
+      btn.onclick = function () { downloadPdf(Number(btn.dataset.id)); };
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('.b-del'), function (btn) {
       btn.onclick = async function () {
-        var r = await api('print_batch', {batch_id: Number(btn.dataset.id)});
-        if (!r.success) { alert('PDF impossible pour ce lot.'); return; }
-        var bin = atob(r.pdf), arr = new Uint8Array(bin.length);
-        for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-        download(r.filename, new Blob([arr], {type: 'application/pdf'}));
+        var ok = await confirmBox('Supprimer ce lot et ses tickets non utilisés ? Un lot contenant un ticket déjà activé ne peut pas être supprimé.');
+        if (!ok) return;
+        btn.disabled = true;
+        var r = await api('delete_batch', {batch_id: Number(btn.dataset.id)});
+        if (r.success) {
+          loadBatches();
+          loadDashboard();
+        } else if (r.message === 'batchInUse') {
+          alert('Ce lot contient ' + r.used + ' ticket(s) déjà activé(s). Révoquez-les d\'abord, ou gardez le lot.');
+        } else {
+          alert('Suppression impossible.');
+        }
+        btn.disabled = false;
       };
     });
   }
@@ -832,7 +1082,7 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
       var sub = t.batch_ref ? 'Lot ' + t.batch_ref : '';
       return '<tr><td><strong>' + esc(ident) + '</strong><div class="muted">' + esc(sub) +
         (t.contact ? ' · ' + esc(t.contact) : '') + '</div></td>' +
-        '<td>' + esc(t.plan_name || '—') + '</td>' +
+        '<td>' + esc(t.plan_title || '—') + '</td>' +
         '<td>' + chip(t.state) + '</td>' +
         '<td>' + (t.expires_at ? dt(t.expires_at) : '—') + '</td>' +
         '<td>' + (t.state === 'revoked' ? '' : '<button class="danger t-revoke" type="button" data-id="' + t.id + '">Révoquer</button>') + '</td></tr>';
@@ -863,7 +1113,7 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
       var code = t.code_plain || ('#' + t.id);
       var limit = t.data_limit_bytes ? bytes(t.data_limit_bytes) : 'illimité';
       return '<tr><td><strong>' + esc(code) + '</strong></td>' +
-        '<td>' + esc(t.plan_name || '—') + '</td>' +
+        '<td>' + esc(t.plan_title || '—') + '</td>' +
         '<td>' + duration(t.remaining) + '</td>' +
         '<td>' + bytes(t.bytes_used) + ' / ' + limit + '</td>' +
         '<td><button class="danger s-revoke" type="button" data-id="' + t.id + '">Révoquer</button></td></tr>';
@@ -970,6 +1220,94 @@ dialog::backdrop{background:rgba(0,0,0,.45)}
         '</td><td>' + esc(e.ip || '') + '</td><td class="muted">' + esc(e.details || '') + '</td></tr>';
     }).join('') || '<tr><td colspan="5" class="muted">Journal vide</td></tr>';
   }
+
+  // ---------- Mon compte : mot de passe ----------
+  $('pwForm').addEventListener('submit', async function (e) {
+    e.preventDefault();
+    var msg = $('pwMsg');
+    if ($('pw-new').value !== $('pw-conf').value) {
+      showMsg(msg, 'Les deux nouveaux mots de passe ne correspondent pas.', false);
+      return;
+    }
+    busy(true, 'Enregistrement…');
+    try {
+      var r = await api('change_password', {
+        current: $('pw-cur').value,
+        new: $('pw-new').value,
+        confirm: $('pw-conf').value
+      });
+      if (r.success) {
+        csrf = r.csrf;
+        document.querySelector('meta[name="csrf-token"]').content = r.csrf;
+        $('pwForm').reset();
+        showMsg(msg, 'Mot de passe changé. Il sera demandé à la prochaine connexion.', true);
+      } else {
+        var err = {
+          wrongPassword: 'Mot de passe actuel incorrect.',
+          tooShort: 'Le nouveau mot de passe doit faire au moins 10 caractères.',
+          samePassword: 'Choisissez un mot de passe différent de l\'ancien.',
+          mismatch: 'Les deux nouveaux mots de passe ne correspondent pas.'
+        }[r.message] || 'Changement impossible.';
+        showMsg(msg, err, false);
+      }
+    } catch (err) {
+      showMsg(msg, 'Le serveur ne répond pas. Réessayez.', false);
+    }
+    busy(false);
+  });
+
+  // ---------- Réinitialisation complète ----------
+  $('resetBtn').onclick = async function () {
+    var ok = await confirmBox('Effacer TOUTES les données (tickets, lots, ventes, sessions, consommation, journal) ? Les comptes, les forfaits et les réglages sont conservés. Une sauvegarde automatique est créée avant.');
+    if (!ok) return;
+    busy(true, 'Effacement en cours…');
+    try {
+      var r = await api('reset_system', {
+        password: $('reset-pass').value,
+        confirm: $('reset-confirm').value
+      });
+      if (r.success) {
+        $('reset-pass').value = '';
+        $('reset-confirm').value = '';
+        showMsg($('resetMsg'), 'Système réinitialisé. Sauvegarde de sécurité : ' + r.safety_file, true);
+        loadDashboard();
+        loadBatches();
+      } else {
+        var err = {
+          confirmRequired: 'Tapez EFFACER pour confirmer.',
+          wrongPassword: 'Mot de passe administrateur incorrect.',
+          backupFailed: 'Sauvegarde impossible : effacement annulé par sécurité.',
+          resetFailed: 'Effacement incomplet. Vérifiez les droits du dossier.'
+        }[r.message] || 'Réinitialisation refusée.';
+        showMsg($('resetMsg'), err, false);
+      }
+    } catch (err) {
+      showMsg($('resetMsg'), 'Le serveur ne répond pas. Réessayez.', false);
+    }
+    busy(false);
+  };
+
+  // ---------- Afficher / masquer les mots de passe ----------
+  Array.prototype.forEach.call(document.querySelectorAll('input[type=password]'), function (input) {
+    if (input.dataset.eye) return;
+    input.dataset.eye = '1';
+    var wrap = document.createElement('div');
+    wrap.className = 'pw';
+    input.parentNode.insertBefore(wrap, input);
+    wrap.appendChild(input);
+    var eye = document.createElement('button');
+    eye.type = 'button';
+    eye.className = 'eye';
+    eye.textContent = '👁';
+    eye.setAttribute('aria-label', 'Afficher le mot de passe');
+    eye.onclick = function () {
+      var show = input.type === 'password';
+      input.type = show ? 'text' : 'password';
+      eye.textContent = show ? '🙈' : '👁';
+      eye.setAttribute('aria-label', show ? 'Masquer le mot de passe' : 'Afficher le mot de passe');
+    };
+    wrap.appendChild(eye);
+  });
 
   $('logoutBtn').onclick = async function () {
     await api('logout');
