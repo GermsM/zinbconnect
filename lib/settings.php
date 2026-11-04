@@ -87,20 +87,33 @@ function format_money(float $amount): string
     return number_format($amount, 0, ',', ' ') . ' ' . (setting('currency') ?? 'FC');
 }
 
-/** Durée lisible à partir de secondes : "1 h 05", "3 j 04 h". */
-function format_duration(int $seconds): string
+/**
+ * Durée d'un forfait en toutes lettres : "1 heure", "12 heures", "3 jours".
+ * Source unique du nom affiché : le prix n'est jamais gravé dans le nom.
+ */
+function plan_duration_label(array $plan): string
 {
-    if ($seconds <= 0) {
-        return '0 min';
+    $minutes = (int)($plan['duration_minutes'] ?? 0);
+    if ($minutes > 0) {
+        if ($minutes % 60 === 0) {
+            $h = intdiv($minutes, 60);
+            return $h . ($h > 1 ? ' heures' : ' heure');
+        }
+        return $minutes . ' minutes';
     }
-    $d = intdiv($seconds, 86400);
-    $h = intdiv($seconds % 86400, 3600);
-    $m = intdiv($seconds % 3600, 60);
-    if ($d > 0) {
-        return $d . ' j' . ($h > 0 ? ' ' . str_pad((string)$h, 2, '0', STR_PAD_LEFT) . ' h' : '');
-    }
-    if ($h > 0) {
-        return $h . ' h' . ($m > 0 ? ' ' . str_pad((string)$m, 2, '0', STR_PAD_LEFT) : '');
-    }
-    return max(1, $m) . ' min';
+    $days = max(1, (int)($plan['duration_days'] ?? 1));
+    return $days . ($days > 1 ? ' jours' : ' jour');
 }
+
+/** Nom affiché d'un forfait (dérivé de la durée, jamais du prix). */
+function plan_title(array $plan): string
+{
+    return plan_duration_label($plan);
+}
+
+/** "1 heure — 1 000 FC", recalculé à chaque affichage. */
+function plan_label(array $plan): string
+{
+    return plan_title($plan) . ' — ' . format_money((float)($plan['rate'] ?? 0));
+}
+

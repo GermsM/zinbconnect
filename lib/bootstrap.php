@@ -161,18 +161,20 @@ function security_headers(): void
     header('X-Frame-Options: DENY');
     header('X-Content-Type-Options: nosniff');
     header('Referrer-Policy: same-origin');
-    header('Permissions-Policy: camera=(), microphone=(), geolocation=()');
+    // camera=(self) : nécessaire au scan du QR code sur le portail client.
+    header('Permissions-Policy: camera=(self), microphone=(), geolocation=()');
     if (is_https() && is_prod()) {
         header('Strict-Transport-Security: max-age=31536000');
     }
-    // CSP pragmatique : le projet utilise encore des CDN (tailwind, fontawesome…).
-    // Phase 3 les retirera : le CSP pourra alors être resserré sur 'self'.
+    // Plus aucune dépendance externe (ni CDN, ni police distante) : le portail
+    // fonctionne donc même sans Internet, et le CSP peut rester sur 'self'.
     header("Content-Security-Policy: default-src 'self';"
-        . " script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://cdn.tailwindcss.com https://kit.fontawesome.com https://cdnjs.cloudflare.com;"
-        . " style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://fonts.googleapis.com;"
-        . " font-src 'self' data: https://fonts.gstatic.com https://kit.fontawesome.com;"
+        . " script-src 'self' 'unsafe-inline';"
+        . " style-src 'self' 'unsafe-inline';"
         . " img-src 'self' data:;"
         . " connect-src 'self';"
+        . " font-src 'self' data:;"
+        . " object-src 'none';"
         . " base-uri 'self'; form-action 'self'; frame-ancestors 'none'");
 }
 

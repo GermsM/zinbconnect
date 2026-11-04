@@ -63,10 +63,10 @@ cli_out('>>> Tables créées (si absentes).');
 $MB = 1024 * 1024;
 $defaults = [
     // [nom, prix FC, jours, minutes, plafond de données]
-    ['1 h — 1 000 FC',  1000, 0, 60,   100 * $MB],
-    ['12 h — 1 500 FC', 1500, 0, 720,  300 * $MB],
-    ['24 h — 2 500 FC', 2500, 0, 1440, 500 * $MB],
-    ['3 jours — 5 000 FC', 5000, 3, 0, 1024 * $MB],
+    ['1 heure',   1000, 0, 60,   100 * $MB],
+    ['12 heures', 1500, 0, 720,  300 * $MB],
+    ['24 heures', 2500, 0, 1440, 500 * $MB],
+    ['3 jours',   5000, 3, 0,    1024 * $MB],
 ];
 $stmt = $db->prepare('SELECT COUNT(*) c FROM subscriptions');
 $stmt->execute();

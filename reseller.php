@@ -1,17 +1,30 @@
 <?php
 /**
- * Zinbconnect — Connexion administrateur / revendeur (Phase 2 : sécurité renforcée)
- * - Configuration via .env uniquement (plus aucun identifiant en dur)
- * - PDO préparé ; mots de passe admin hachés Argon2id (l'ancien en clair est migré à la 1re connexion)
- * - Anti-brute-force : 5 essais / 15 min par IP ET par identifiant
- * - Jeton CSRF de session ; sessions régénérées à la connexion ; 2FA TOTP optionnelle ; journal d'audit
+ * Zinbconnect — connexion administrateur / revendeur.
+ *
+ * Page autonome (aucun CDN, aucune police externe) : elle doit s'afficher même
+ * quand Internet est coupé, puisque l'administration se fait depuis le portail.
+ *
+ * Sécurité : mot de passe haché vérifié côté serveur, anti-brute-force
+ * (5 essais / 15 min par IP et par identifiant), CSRF, session régénérée,
+ * 2FA TOTP optionnelle pour l'administrateur.
  */
 declare(strict_types=1);
 
 require_once __DIR__ . '/lib/security.php';
+require_once __DIR__ . '/lib/settings.php';
 
 security_headers();
 session_boot();
+
+if (!empty($_SESSION['admin_id'])) {
+    header('Location: admin.php');
+    exit;
+}
+if (!empty($_SESSION['reseller_id'])) {
+    header('Location: dashboard.php');
+    exit;
+}
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $input    = json_input();
@@ -24,10 +37,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $result = attempt_login($contact, $password, $totp);
 
     if ($result['ok']) {
-        // Le cookie "30 jours" (admin_id / reseller_id) est supprimé :
-        // la session PHP régénérée est la seule preuve d'accès, révocable côté serveur.
-        setcookie('admin_id',   '', ['expires' => time() - 3600, 'path' => '/', 'httponly' => true, 'samesite' => 'Lax']);
-        setcookie('reseller_id','', ['expires' => time() - 3600, 'path' => '/', 'httponly' => true, 'samesite' => 'Lax']);
+        setcookie('admin_id',    '', ['expires' => time() - 3600, 'path' => '/', 'httponly' => true, 'samesite' => 'Lax']);
+        setcookie('reseller_id', '', ['expires' => time() - 3600, 'path' => '/', 'httponly' => true, 'samesite' => 'Lax']);
         json_out(['success' => true, 'user_type' => $result['user_type']]);
     }
 
@@ -38,355 +49,214 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         'totpRequired' => !empty($result['totpRequired']),
     ]);
 }
+
+$portalName = setting('portal_name') ?? 'Zinbconnect';
 ?>
-
 <!DOCTYPE html>
-<html lang="en">
+<html lang="fr">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ZinbConnect - Login</title>
-    <meta name="csrf-token" content="<?php echo html(csrf_token()); ?>">
-    <link rel="icon" type="image/x-icon" href="download.png">
-    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://kit.fontawesome.com/4a5d7f6b46.js" crossorigin="anonymous"></script>
-    <style>
-        @keyframes pulse {
-            0% { transform: scale(1); opacity: 0.7; }
-            50% { transform: scale(1.2); opacity: 1; }
-            100% { transform: scale(1); opacity: 0.7; }
-        }
-        @keyframes gradient {
-            0% { background-position: 0% 50%; }
-            50% { background-position: 100% 50%; }
-            100% { background-position: 0% 50%; }
-        }
-        .wifi-icon, .button-icon {
-            animation: pulse 2s infinite;
-            color: #d8b4fe;
-        }
-        .dark .wifi-icon, .dark .button-icon {
-            color: #a78bfa;
-        }
-        .bg-gradient-animate {
-            background: linear-gradient(45deg, #d8b4fe, #f3e8ff, #d8b4fe, #f3e8ff);
-            background-size: 400%;
-            animation: gradient 15s ease infinite;
-        }
-        .dark .bg-gradient-animate {
-            background: linear-gradient(45deg, #6b7280, #1f2937, #6b7280, #1f2937);
-        }
-        .signal-icon-container {
-            position: relative;
-            display: inline-flex;
-            align-items: flex-end;
-            height: 1.5rem;
-            width: 1.5rem;
-        }
-        .signal-bar {
-            width: 4px;
-            background: #d8b4fe;
-            margin-left: 2px;
-            transform-origin: bottom;
-        }
-        .dark .signal-bar {
-            background: #a78bfa;
-        }
-        .signal-bar:nth-child(1) { height: 0.5rem; animation: signal 1.5s infinite; }
-        .signal-bar:nth-child(2) { height: 0.8rem; animation: signal 1.5s infinite 0.3s; }
-        .signal-bar:nth-child(3) { height: 1.2rem; animation: signal 1.5s infinite 0.6s; }
-        .signal-icon-container:hover .signal-bar {
-            animation-duration: 1s;
-        }
-        @keyframes signal {
-            0% { transform: scaleY(1); }
-            50% { transform: scaleY(1.5); }
-            100% { transform: scaleY(1); }
-        }
-    </style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#4c1d95">
+<meta name="csrf-token" content="<?php echo html(csrf_token()); ?>">
+<title>ZinbConnect — Connexion</title>
+<link rel="icon" href="download.png">
+<style>
+:root{--v:#5b21b6;--v2:#7c3aed;--v3:#a78bfa;--txt:#1f2937;--muted:#6b7280;--line:#ede9fe}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;color:var(--txt);line-height:1.5;font-size:16px;min-height:100vh;
+ background:linear-gradient(160deg,#f5f3ff 0%,#fff 48%,#ede9fe 100%);background-attachment:fixed;display:flex;flex-direction:column}
+.top{display:flex;justify-content:space-between;align-items:center;padding:14px 16px}
+.brand{display:flex;align-items:center;gap:9px;font-weight:800;color:var(--v);text-decoration:none;font-size:15px}
+.brand .dot{width:32px;height:32px;border-radius:10px;background:linear-gradient(135deg,var(--v),var(--v3));color:#fff;display:flex;align-items:center;justify-content:center;font-size:16px;box-shadow:0 5px 14px rgba(91,33,182,.28);position:relative;overflow:hidden}
+.brand .dot::after{content:"";position:absolute;inset:-40%;background:linear-gradient(115deg,transparent 40%,rgba(255,255,255,.6) 50%,transparent 60%);animation:shine 4.5s ease-in-out infinite}
+.top a.home{font-size:13px;color:var(--v);text-decoration:none;border:1px solid #ddd6fe;border-radius:9px;padding:7px 11px;background:#fff;transition:background .2s,transform .12s}
+.top a.home:active{transform:scale(.98)}
+main{flex:1;display:flex;align-items:center;justify-content:center;padding:8px 16px 30px}
+.box{width:100%;max-width:420px}
+.hero{text-align:center;margin-bottom:20px;animation:rise .5s ease both}
+.hero h1{font-size:29px;margin:0;font-weight:800;letter-spacing:-.6px;
+ background:linear-gradient(100deg,#4c1d95,#7c3aed,#a78bfa,#7c3aed);background-size:300% 100%;
+ -webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;animation:flow 9s ease infinite;display:inline-flex;align-items:center;gap:10px}
+.bars{display:inline-flex;align-items:flex-end;gap:3px;height:20px}
+.bars i{width:4px;border-radius:2px;background:linear-gradient(180deg,#a78bfa,#7c3aed);transform-origin:bottom;animation:signal 1.7s ease-in-out infinite}
+.bars i:nth-child(1){height:8px}
+.bars i:nth-child(2){height:13px;animation-delay:.18s}
+.bars i:nth-child(3){height:20px;animation-delay:.36s}
+.hero p{margin:7px 0 0;font-size:13.5px;color:var(--muted)}
+.card{background:#fff;border-radius:18px;padding:22px;box-shadow:0 12px 36px rgba(76,29,149,.12),0 2px 6px rgba(0,0,0,.04);border:1px solid rgba(237,233,254,.9);animation:rise .45s .05s ease both}
+label{display:block;font-size:13px;font-weight:700;margin:0 0 6px;color:#3b0764}
+.field{margin-bottom:14px;position:relative}
+input{width:100%;padding:13px 14px;font-size:16px;border:1.6px solid var(--line);border-radius:11px;background:#fdfcff;transition:border-color .2s,box-shadow .2s;color:var(--txt)}
+input:focus{outline:none;border-color:var(--v2);box-shadow:0 0 0 4px rgba(124,58,237,.13);background:#fff}
+.field .eye{position:absolute;right:5px;bottom:6px;background:none;border:0;font-size:17px;padding:7px;cursor:pointer;color:#6b7280;border-radius:8px;line-height:1}
+.field .eye:active{background:#f3f4f6}
+button.primary{width:100%;padding:14px;font-size:16.5px;font-weight:800;color:#fff;border:0;border-radius:12px;cursor:pointer;
+ background:linear-gradient(135deg,var(--v),var(--v2));box-shadow:0 7px 18px rgba(91,33,182,.28);transition:transform .12s,opacity .2s}
+button.primary:active{transform:scale(.985)}
+button.primary:disabled{opacity:.6}
+.msg{display:none;margin-top:14px;padding:12px 13px;border-radius:11px;font-size:14px;animation:rise .2s ease both}
+.msg.show{display:block}
+.msg.ko{background:#fef2f2;border:1px solid #fecaca;color:#7f1d1d}
+.msg.ok{background:#f0fdf4;border:1px solid #bbf7d0;color:#14532d}
+details{margin-top:12px;border-top:1px solid var(--line);padding-top:12px}
+summary{cursor:pointer;font-size:13px;color:var(--v);font-weight:600;list-style:none}
+summary::-webkit-details-marker{display:none}
+summary::before{content:"② ";}
+details input{margin-top:9px;letter-spacing:3px;text-align:center;font-size:18px}
+.help{text-align:center;font-size:12.5px;color:var(--muted);margin-top:16px;animation:rise .5s .15s ease both}
+.help a{color:var(--v)}
+footer{text-align:center;font-size:12px;color:var(--muted);padding:14px 16px 22px}
+@keyframes rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+@keyframes flow{0%,100%{background-position:0% 50%}50%{background-position:100% 50%}}
+@keyframes shine{0%,70%{transform:translateX(-120%)}100%{transform:translateX(120%)}}
+@keyframes signal{0%,100%{transform:scaleY(.5);opacity:.55}50%{transform:scaleY(1);opacity:1}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
 </head>
-<body class="min-h-screen bg-gradient-animate flex flex-col font-sans text-gray-900 dark:text-gray-100 dark:bg-gray-900 transition-colors duration-300">
-    <header class="w-full p-4 flex justify-between items-center bg-white dark:bg-gray-800 shadow-md">
-        <div class="flex space-x-2">
-            <a href="index.php" class="px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 transition flex items-center">
-                <i class="fas fa-home text-lg button-icon mr-1"></i>
-                <span id="homeText">Home</span>
-            </a>
-        </div>
-        <div class="flex space-x-2">
-            <select id="languageSelect" class="px-2 py-1 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100">
-                <option value="en">English</option>
-                <option value="fr">Français</option>
-                <option value="sw">Kiswahili</option>
-            </select>
-        </div>
-    </header>
+<body>
+  <header class="top">
+    <a class="brand" href="index.php"><span class="dot">Z</span><?php echo html($portalName); ?></a>
+    <a class="home" href="index.php">Portail client</a>
+  </header>
 
-    <main class="flex-grow flex flex-col items-center justify-center p-4">
-        <div class="text-center mb-8">
-            <h1 class="text-4xl font-bold text-purple-600 dark:text-purple-400 flex items-center justify-center animate-pulse">
-                <div class="signal-icon-container mr-2">
-                    <div class="signal-bar"></div>
-                    <div class="signal-bar"></div>
-                    <div class="signal-bar"></div>
-                </div>
-                ZinbConnect - Login
-            </h1>
-            <p id="welcomeText" class="text-lg mt-2">Log in to start managing access codes.</p>
-        </div>
-        <div class="w-full max-w-md bg-white dark:bg-gray-800 p-6 rounded-lg shadow-lg">
-            <div class="flex justify-center mb-4">
-                <i class="fas fa-user-lock text-4xl text-purple-600 dark:text-purple-400 wifi-icon"></i>
-            </div>
-            <div id="loginFormContainer" class="space-y-4">
-                <input id="contact" type="text" placeholder="Enter Phone or Email" class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 rounded-md bg-white text-gray-900" required>
-                <input id="password" type="password" placeholder="Enter Password" class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100" required>
-                <input id="totp" type="text" inputmode="numeric" maxlength="6" placeholder="2FA code (optional)" class="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-md bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100">
-                <button id="loginBtn" class="w-full px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700 transition">Log In</button>
-            </div>
-            <p id="notification" class="mt-4 text-red-500 hidden"></p>
-            <div class="mt-6 text-center">
-                <a href="reseller-s.php" id="signupLink" class="text-purple-600 dark:text-purple-400 hover:underline">Create a Reseller Account</a>
-            </div>
-        </div>
-    </main>
+  <main>
+    <div class="box">
+      <div class="hero">
+        <h1><span class="bars" aria-hidden="true"><i></i><i></i><i></i></span>ZinbConnect</h1>
+        <p>Espace revendeur et administration</p>
+      </div>
 
-    <footer class="w-full p-4 bg-white dark:bg-gray-800 text-center space-x-4">
-        <a href="#" id="termsLink" class="text-purple-600 dark:text-purple-400 hover:underline">Terms of Service</a>
-        <a href="#" id="privacyLink" class="text-purple-600 dark:text-purple-400 hover:underline">Privacy</a>
-        <a href="#" id="legalLink" class="text-purple-600 dark:text-purple-400 hover:underline">Legal</a>
-        <div class="mt-4 bg-gradient-to-r from-purple-100 to-purple-200 dark:from-gray-700 dark:to-gray-800 p-2 rounded-md text-sm font-semibold italic text-purple-600 dark:text-purple-400">
-            <p id="zinboLink">©2025 All rights reserved - Zinbo Technology</p>
+      <form class="card" id="loginForm" autocomplete="on">
+        <div class="field">
+          <label for="contact">Téléphone ou e-mail</label>
+          <input id="contact" name="contact" type="text" autocomplete="username" placeholder="+243… ou admin@…" required>
         </div>
-    </footer>
+        <div class="field">
+          <label for="password">Mot de passe</label>
+          <input id="password" name="password" type="password" autocomplete="current-password" required>
+        </div>
+        <button class="primary" id="loginBtn" type="submit">Se connecter</button>
 
-    <div id="termsModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden">
-        <div class="bg-gradient-animate p-6 rounded-lg shadow-lg max-w-lg w-full">
-            <h2 class="text-2xl font-bold mb-4 text-purple-600 dark:text-purple-400">Terms of Service</h2>
-            <p class="text-gray-900 dark:text-gray-100">Placeholder for Terms of Service content.</p>
-            <button id="closeTermsModal" class="mt-4 text-gray-600 dark:text-gray-400 hover:underline">Close</button>
-        </div>
+        <details id="totpBox">
+          <summary>J'utilise la double authentification (2FA)</summary>
+          <label for="totp" style="margin-top:10px">Code à 6 chiffres</label>
+          <input id="totp" name="totp" type="text" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="123456">
+        </details>
+
+        <div class="msg" id="notice" role="status" aria-live="polite"></div>
+      </form>
+
+      <p class="help">Pas encore de compte ? Les comptes revendeurs sont créés par l'administrateur.<br>
+        <a href="index.php">← Retour au portail client</a></p>
     </div>
-    <div id="privacyModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden">
-        <div class="bg-gradient-animate p-6 rounded-lg shadow-lg max-w-lg w-full">
-            <h2 class="text-2xl font-bold mb-4 text-purple-600 dark:text-purple-400">Privacy Policy</h2>
-            <p class="text-gray-900 dark:text-gray-100">Placeholder for Privacy Policy content.</p>
-            <button id="closePrivacyModal" class="mt-4 text-gray-600 dark:text-gray-400 hover:underline">Close</button>
-        </div>
-    </div>
-    <div id="legalModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden">
-        <div class="bg-gradient-animate p-6 rounded-lg shadow-lg max-w-lg w-full">
-            <h2 class="text-2xl font-bold mb-4 text-purple-600 dark:text-purple-400">Legal Information</h2>
-            <p class="text-gray-900 dark:text-gray-100">Placeholder for Legal content.</p>
-            <button id="closeLegalModal" class="mt-4 text-gray-600 dark:text-gray-400 hover:underline">Close</button>
-        </div>
-    </div>
-    <div id="approvalModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden">
-        <div class="bg-gradient-animate p-6 rounded-lg shadow-lg max-w-md w-full">
-            <h2 id="approvalModalTitle" class="text-2xl font-bold mb-4 text-purple-600 dark:text-purple-400">Awaiting Approval</h2>
-            <p id="approvalModalMessage" class="text-gray-900 dark:text-gray-100">Your account is pending admin approval. Please contact the administrator to start selling access codes.</p>
-            <button id="closeApprovalModal" class="mt-4 px-4 py-2 bg-purple-600 text-white rounded-md hover:bg-purple-700">Close</button>
-        </div>
-    </div>
+  </main>
 
-    <script>
-        const translations = {
-            en: {
-                welcome: "Log in to access codes or manage the platform.",
-                home: "Home",
-                login: "Log In",
-                contactPlaceholder: "Enter Phone or Email",
-                passwordPlaceholder: "Enter Password",
-                signupLink: "Create a Reseller Account",
-                terms: "Terms of Service",
-                privacy: "Privacy",
-                legal: "Legal",
-                zinbo: "©2025 All rights reserved - Zinbo Technology",
-                invalidCredentials: "Invalid credentials. Please try again.",
-                missingFields: "Please fill in all fields.",
-                pendingApproval: "Your account is pending admin approval. Please contact the administrator to start selling access codes.",
-                approvalTitle: "Pending Approval",
-                adminLoginSuccess: "Logged in as Admin. Redirecting to admin dashboard...",
-                resellerLoginSuccess: "Logged in as Reseller. Redirecting to dashboard...",
-                tooManyAttempts: "Too many attempts. Retry in {min} minute(s).",
-                totpRequired: "Enter the 6-digit code from your authenticator app.",
-                csrfInvalid: "Security check failed. Reload the page and retry."
-            },
-            fr: {
-                welcome: "Connectez-vous pour commencer à gérer les codes d'accès.",
-                home: "Accueil",
-                login: "Connexion",
-                contactPlaceholder: "Entrez le téléphone ou l'email",
-                passwordPlaceholder: "Entrez le mot de passe",
-                signupLink: "Créer un compte revendeur",
-                terms: "Conditions de service",
-                privacy: "Confidentialité",
-                legal: "Mentions légales",
-                zinbo: "©2025 Tous droits réservés - Zinbo Technology",
-                invalidCredentials: "Identifiants invalides. Veuillez réessayer.",
-                missingFields: "Veuillez remplir tous les champs.",
-                pendingApproval: "Votre compte est en attente d'approbation. Veuillez contacter l'administrateur pour commencer à vendre des codes d'accès.",
-                approvalTitle: "En attente d'approbation",
-                adminLoginSuccess: "Connecté en tant qu'Admin. Redirection vers le tableau de bord admin...",
-                resellerLoginSuccess: "Connecté en tant que Revendeur. Redirection vers le tableau de bord...",
-                tooManyAttempts: "Trop de tentatives. Réessayez dans {min} minute(s).",
-                totpRequired: "Saisissez le code à 6 chiffres de votre application d'authentification.",
-                csrfInvalid: "Vérification de sécurité échouée. Rechargez la page puis réessayez."
-            },
-            sw: {
-                welcome: "Ingia ili uanze kupata nambari za upatikanaji.",
-                home: "Nyumbani",
-                login: "Ingia",
-                contactPlaceholder: "Ingiza Simu au Barua Pepe",
-                passwordPlaceholder: "Ingiza Nenosiri",
-                signupLink: "Fungua Akaunti ya Muuzaji",
-                terms: "Masharti ya Huduma",
-                privacy: "Faragha",
-                legal: "Taarifa za Kisheria",
-                zinbo: "©2025 Haki zote zimehifadhiwa - Zinbo Technology",
-                invalidCredentials: "Taarifa zisizo sahihi. Tafadhali jaribu tena.",
-                missingFields: "Tafadhali jaza sehemu zote.",
-                pendingApproval: "Akaunti yako inasubiri idhini ya admin. Tafadhali wasiliana na msimamizi ili uanze kuuza nambari za upatikanaji.",
-                approvalTitle: "Inasubiri Idhini",
-                adminLoginSuccess: "Umeingia kama Admin. Inaelekeza kwenye dashibodi ya admin...",
-                resellerLoginSuccess: "Umeingia kama Muuzaji. Inaelekeza kwenye dashibodi...",
-                tooManyAttempts: "Jaribio nyingi sana. Jaribu tena baada ya dakika {min}.",
-                totpRequired: "Ingiza nambari ya 6 kutoka kwenye programu yako ya uthibitishaji.",
-                csrfInvalid: "Ukaguzi wa usalama umeshindikana. Pakia upya ukurasa kisha ujaribu tena."
-            }
-        };
+  <footer><?php echo html($portalName); ?> · Kitutu · Zinbo Technology</footer>
 
-        let currentLang = 'en';
-        const languageSelect = document.getElementById('languageSelect');
-        languageSelect.addEventListener('change', (e) => {
-            currentLang = e.target.value;
-            updateLanguage();
-        });
+<script>
+(function () {
+  var form = document.getElementById('loginForm');
+  var btn = document.getElementById('loginBtn');
+  var notice = document.getElementById('notice');
+  var csrf = document.querySelector('meta[name="csrf-token"]').content;
+  var waitTimer = null;
 
-        function updateLanguage() {
-            document.getElementById('welcomeText').textContent = translations[currentLang].welcome;
-            document.getElementById('homeText').textContent = translations[currentLang].home;
-            document.getElementById('loginBtn').textContent = translations[currentLang].login;
-            document.getElementById('contact').placeholder = translations[currentLang].contactPlaceholder;
-            document.getElementById('password').placeholder = translations[currentLang].passwordPlaceholder;
-            document.getElementById('signupLink').textContent = translations[currentLang].signupLink;
-            document.getElementById('termsLink').textContent = translations[currentLang].terms;
-            document.getElementById('privacyLink').textContent = translations[currentLang].privacy;
-            document.getElementById('legalLink').textContent = translations[currentLang].legal;
-            document.getElementById('zinboLink').textContent = translations[currentLang].zinbo;
-            document.getElementById('approvalModalTitle').textContent = translations[currentLang].approvalTitle;
-            document.getElementById('approvalModalMessage').textContent = translations[currentLang].pendingApproval;
-        }
+  function show(text, ok) {
+    notice.className = 'msg show ' + (ok ? 'ok' : 'ko');
+    notice.textContent = text;
+  }
 
-        const termsModal = document.getElementById('termsModal');
-        const privacyModal = document.getElementById('privacyModal');
-        const legalModal = document.getElementById('legalModal');
-        const approvalModal = document.getElementById('approvalModal');
-        const notification = document.getElementById('notification');
+  // Œil : afficher / masquer le mot de passe
+  var pass = document.getElementById('password');
+  var eye = document.createElement('button');
+  eye.type = 'button';
+  eye.className = 'eye';
+  eye.textContent = '👁';
+  eye.setAttribute('aria-label', 'Afficher le mot de passe');
+  eye.onclick = function () {
+    var showPw = pass.type === 'password';
+    pass.type = showPw ? 'text' : 'password';
+    eye.textContent = showPw ? '🙈' : '👁';
+    eye.setAttribute('aria-label', showPw ? 'Masquer le mot de passe' : 'Afficher le mot de passe');
+  };
+  pass.parentNode.appendChild(eye);
 
-        document.getElementById('termsLink').addEventListener('click', (e) => {
-            e.preventDefault();
-            termsModal.classList.remove('hidden');
-        });
+  function lockLeft(sec) {
+    if (waitTimer) clearInterval(waitTimer);
+    var left = Math.max(0, Math.floor(sec));
+    btn.disabled = true;
+    var tick = function () {
+      if (left <= 0) {
+        clearInterval(waitTimer);
+        btn.disabled = false;
+        btn.textContent = 'Se connecter';
+        show('Vous pouvez réessayer.', false);
+        return;
+      }
+      var m = Math.floor(left / 60), s = left % 60;
+      btn.textContent = 'Patientez ' + (m > 0 ? m + ' min ' : '') + s + ' s';
+      left--;
+    };
+    tick();
+    waitTimer = setInterval(tick, 1000);
+  }
 
-        document.getElementById('zinboLink').addEventListener('click', (e) => {
-            e.preventDefault();
-            termsModal.classList.remove('hidden');
-        });
-
-        document.getElementById('privacyLink').addEventListener('click', (e) => {
-            e.preventDefault();
-            privacyModal.classList.remove('hidden');
-        });
-
-        document.getElementById('legalLink').addEventListener('click', (e) => {
-            e.preventDefault();
-            legalModal.classList.remove('hidden');
-        });
-
-        document.getElementById('closeTermsModal').addEventListener('click', () => {
-            termsModal.classList.add('hidden');
-        });
-
-        document.getElementById('closePrivacyModal').addEventListener('click', () => {
-            privacyModal.classList.add('hidden');
-        });
-
-        document.getElementById('closeLegalModal').addEventListener('click', () => {
-            legalModal.classList.add('hidden');
-        });
-
-        document.getElementById('closeApprovalModal').addEventListener('click', () => {
-            approvalModal.classList.add('hidden');
-        });
-
-        // Jeton CSRF exposé par la page (une seule lecture)
-        const CSRF = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
-
-        document.getElementById('loginBtn').addEventListener('click', () => {
-            const contact = document.getElementById('contact').value.trim();
-            const password = document.getElementById('password').value;
-            const totpEl = document.getElementById('totp');
-            const totp = totpEl ? totpEl.value.trim() : '';
-            if (contact && password) {
-                fetch('', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': CSRF },
-                    body: JSON.stringify({ contact, password, totp })
-                })
-                .then(response => response.json())
-                .then(data => {
-                    if (data.success) {
-                        notification.textContent = data.user_type === 'admin.php' ? translations[currentLang].adminLoginSuccess : translations[currentLang].resellerLoginSuccess;
-                        notification.classList.remove('hidden', 'text-red-500');
-                        notification.classList.add('text-green-500');
-                        setTimeout(() => {
-                            window.location.href = data.user_type;
-                        }, 800);
-                    } else {
-                        let msg;
-                        switch (data.message) {
-                            case 'pendingApproval':
-                                approvalModal.classList.remove('hidden');
-                                break;
-                            case 'tooManyAttempts': {
-                                const min = Math.max(1, Math.ceil((data.wait || 60) / 60));
-                                msg = translations[currentLang].tooManyAttempts.replace('{min}', min);
-                                break;
-                            }
-                            case 'totpRequired':
-                                msg = translations[currentLang].totpRequired;
-                                break;
-                            case 'csrfInvalid':
-                                msg = translations[currentLang].csrfInvalid;
-                                break;
-                            case 'missingFields':
-                                msg = translations[currentLang].missingFields;
-                                break;
-                            default:
-                                msg = translations[currentLang].invalidCredentials;
-                        }
-                        if (msg) {
-                            notification.textContent = msg;
-                            notification.classList.remove('hidden', 'text-green-500');
-                            notification.classList.add('text-red-500');
-                        }
-                    }
-                })
-                .catch(() => {
-                    notification.textContent = translations[currentLang].invalidCredentials;
-                    notification.classList.remove('hidden', 'text-green-500');
-                    notification.classList.add('text-red-500');
-                });
-            } else {
-                notification.textContent = translations[currentLang].missingFields;
-                notification.classList.remove('hidden', 'text-green-500');
-                notification.classList.add('text-red-500');
-            }
-        });
-
-        updateLanguage();
-    </script>
+  form.addEventListener('submit', async function (e) {
+    e.preventDefault();
+    btn.disabled = true;
+    btn.textContent = 'Connexion…';
+    try {
+      var res = await fetch('reseller.php', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json', 'X-CSRF-Token': csrf},
+        body: JSON.stringify({
+          contact: document.getElementById('contact').value,
+          password: pass.value,
+          totp: document.getElementById('totp').value,
+          csrf: csrf
+        })
+      });
+      var d = await res.json();
+      if (d.success) {
+        show('Connexion réussie, ouverture…', true);
+        location.href = d.user_type === 'admin.php' ? 'admin.php' : 'dashboard.php';
+        return;
+      }
+      btn.disabled = false;
+      btn.textContent = 'Se connecter';
+      if (d.totpRequired) {
+        document.getElementById('totpBox').open = true;
+        show('Entrez le code à 6 chiffres de votre application d\'authentification.', false);
+        document.getElementById('totp').focus();
+        return;
+      }
+      if (d.message === 'tooManyAttempts') {
+        show('Trop d\'essais. Compte verrouillé quelques minutes par sécurité.', false);
+        lockLeft(d.wait || 300);
+        return;
+      }
+      if (d.message === 'pendingApproval') {
+        show('Ce compte revendeur est désactivé par l\'administrateur.', false);
+        return;
+      }
+      if (d.message === 'csrfInvalid') {
+        show('Session expirée. Rechargez la page.', false);
+        return;
+      }
+      if (d.message === 'missingFields') {
+        show('Remplissez le téléphone (ou e-mail) et le mot de passe.', false);
+        return;
+      }
+      show('Identifiant ou mot de passe incorrect.', false);
+    } catch (err) {
+      btn.disabled = false;
+      btn.textContent = 'Se connecter';
+      show('Serveur injoignable. Vérifiez que le Wi-Fi est connecté.', false);
+    }
+  });
+})();
+</script>
 </body>
 </html>
