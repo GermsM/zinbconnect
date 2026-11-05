@@ -1,6 +1,7 @@
 # =====================================================================
 # Zinbconnect - Kitutu (RDC)
 # RB2011UiAS-2HnD-IN - hotspot / portail captif (rb2011-hotspot.rsc)
+# Cible : RouterOS 7.25.1 (version installee et verifiee sur le routeur).
 # ---------------------------------------------------------------------
 # A IMPORTER APRES rb2011-base.rsc (il suppose : bridge "lan",
 # 10.20.30.1/24, DHCP actif, ETH10-PoE vers l'EAP225-Outdoor).
