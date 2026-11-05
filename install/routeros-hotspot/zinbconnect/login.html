@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zinbconnect — Wi-Fi Kitutu</title>
+<style>
+  /* Page autonome : aucun lien externe (aucun CDN). */
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: #0e2a3a; color: #eef6fa; padding: 16px;
+  }
+  main { width: 100%; max-width: 380px; background: #123247; border-radius: 14px; padding: 28px 24px;
+         box-shadow: 0 12px 40px rgba(0,0,0,.35); text-align: center; }
+  h1 { margin: 0 0 6px; font-size: 22px; letter-spacing: .5px; }
+  .sub { margin: 0 0 18px; font-size: 14px; color: #9fc3d4; }
+  input[name="code"] {
+    width: 100%; padding: 14px 12px; font-size: 18px; text-align: center; letter-spacing: 2px;
+    border: 2px solid #2b5672; border-radius: 10px; background: #0e2a3a; color: #fff;
+    text-transform: uppercase; outline: none;
+  }
+  input[name="code"]:focus { border-color: #4c9f7a; }
+  button {
+    width: 100%; margin-top: 14px; padding: 14px; font-size: 16px; font-weight: 600;
+    border: 0; border-radius: 10px; background: #4c9f7a; color: #fff; cursor: pointer;
+  }
+  button:active { transform: scale(.98); }
+  .err { margin: 14px 0 0; font-size: 14px; color: #ff9c9c; }
+  .help { margin: 18px 0 0; font-size: 12px; color: #7da7bb; line-height: 1.5; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Zinbconnect</h1>
+  <p class="sub">Wi-Fi Kitutu — entrez le code de votre ticket</p>
+  <form name="login" action="$(link-login-only)" method="post">
+    <input type="hidden" name="dst" value="$(link-orig)">
+    <input type="hidden" name="popup" value="false">
+    <input type="hidden" name="username" value="">
+    <input type="hidden" name="password" value="">
+    <!-- champ unique : la même valeur devient username et password -->
+    <input type="text" name="code" maxlength="14" autocomplete="off"
+           autocapitalize="characters" spellcheck="false"
+           placeholder="CODE À 12 CARACTÈRES" onkeydown="submit_(event)">
+    <button type="button" onclick="login_(form)">Se connecter</button>
+  </form>
+  $(if error)<p class="err">$(error)</p>$(endif)
+  <p class="help">Achat : auprès des revendeurs de Zinbconnect.<br>
+  Un code = un forfait utilisable sur un appareil.</p>
+</main>
+<script>
+/* Saisie assouplie : majuscules, espaces et tirets retirés, puis le code
+   alimente à la fois username et password (login utilisateur hotspot). */
+function _clean(s) {
+  return String(s || '').replace(/[\s\-_\.]/g, '').toUpperCase();
+}
+function login_(f) {
+  var c = _clean(new FormData(f).get('code'));
+  if (c.length < 8) return; // rejeter trop court, couper avant l'envoi
+  f.username.value = c;
+  f.password.value = c;
+  f.submit();
+}
+function submit_(e) {
+  if (e.key === 'Enter') { e.preventDefault(); login_(document.forms.login); }
+}
+</script>
+</body>
+</html>

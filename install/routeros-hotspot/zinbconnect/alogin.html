@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Zinbconnect — connecté</title>
+<style>
+  /* Page autonome : aucun lien externe (aucun CDN). */
+  body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
+         font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+         background: #0e2a3a; color: #eef6fa; padding: 16px; }
+  main { width: 100%; max-width: 380px; background: #123247; border-radius: 14px; padding: 28px 24px;
+         box-shadow: 0 12px 40px rgba(0,0,0,.35); text-align: center; }
+  h1 { margin: 0 0 6px; font-size: 22px; }
+  .ok { margin: 0 0 16px; font-size: 15px; color: #8fd4ae; }
+  a.status { display: inline-block; padding: 10px 18px; border-radius: 10px; background: #2b5672;
+             color: #fff; text-decoration: none; font-size: 14px; }
+  p.small { margin: 14px 0 0; font-size: 12px; color: #7da7bb; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Zinbconnect</h1>
+  <p class="ok">Accès accordé — bonne navigation !</p>
+  <p><a class="status" href="$(link-status)">Voir mon temps restant</a></p>
+  <p class="small">La page demandée s'ouvre tout seul dans quelques secondes…</p>
+</main>
+<script>
+/* Redirection vers la page demandée à l'origine ($(link-redirect)),
+   après un court délai pour laisser lire la confirmation. */
+setTimeout(function () {
+  window.location.href = "$(link-redirect)";
+}, 2000);
+</script>
+</body>
+</html>

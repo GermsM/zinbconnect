@@ -4,7 +4,8 @@
  *
  * Une seule page, sans dépendance externe (aucun CDN) :
  *   - tableau de bord : ventes jour/semaine/mois, consommation Starlink ;
- *   - tickets : génération de lots, PDF avec QR, CSV, recherche, révocation ;
+ *   - tickets : génération de lots, PDF avec QR, CSV, recherche, révocation,
+ *     export hotspot MikroTik (.rsc) ;
  *   - ventes par forfait, sessions actives ;
  *   - réglages : prix, plafonds de données, quota Starlink ;
  *   - revendeurs, journal d'audit ;
@@ -18,6 +19,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/lib/tickets.php';
 require_once __DIR__ . '/lib/backup.php';
 require_once __DIR__ . '/lib/pdf.php';
+require_once __DIR__ . '/lib/routeros.php';
 
 security_headers();
 session_boot();
@@ -79,6 +81,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['pdf'])) {
     header('Content-Length: ' . strlen($pdf));
     header('Cache-Control: no-store');
     echo $pdf;
+    exit;
+}
+
+/**
+ * Téléchargement en GET du fichier d'import MikroTik d'un lot (Voie 1).
+ * Mêmes garde-fous que le PDF : réservé à la session admin, envoi direct
+ * du fichier (aucun traitement navigateur).
+ */
+if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['rsc'])) {
+    $batch = batch_by_id((int)$_GET['rsc']);
+    if (!$batch) {
+        http_response_code(404);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo 'Lot introuvable.';
+        exit;
+    }
+
+    $rows = array_values(array_filter(
+        batch_tickets((int)$batch['id']),
+        function (array $t): bool { return ($t['code_plain'] ?? '') !== ''; }
+    ));
+    $rsc = routeros_hotspot_import($rows, (string)$batch['reference']);
+    if ($rsc === null) {
+        http_response_code(409);
+        header('Content-Type: text/plain; charset=utf-8');
+        echo 'Rien à importer : tous les tickets de ce lot sont déjà consommés, expirés ou révoqués ; gérez-les au hotspot.';
+        exit;
+    }
+    audit('batch_rsc_exported', $actor, 'lot=' . $batch['reference']);
+
+    $filename = routeros_import_filename((string)$batch['reference']);
+    header('Content-Type: application/octet-stream');
+    header('Content-Disposition: attachment; filename="' . $filename . '"');
+    header('Content-Length: ' . strlen($rsc));
+    header('Cache-Control: no-store');
+    echo $rsc;
     exit;
 }
 
@@ -577,6 +615,7 @@ nav button:hover{background:rgba(255,255,255,.22)}
         <div class="actions" id="genResult" style="display:none">
           <button class="ghost" id="printBtn" type="button">Imprimer le PDF (QR)</button>
           <button class="ghost" id="csvBtn" type="button">Télécharger le CSV</button>
+          <button class="ghost" id="rscBtn" type="button">Import MikroTik (.rsc)</button>
         </div>
       </form>
     </div>
@@ -857,6 +896,28 @@ nav button:hover{background:rgba(255,255,255,.22)}
     }
   }
 
+  /** Télécharge le fichier d'import MikroTik (.rsc) d'un lot. */
+  async function downloadRsc(batchId) {
+    busy(true, 'Préparation du fichier…');
+    try {
+      var res = await fetch('admin.php?rsc=' + encodeURIComponent(batchId), {headers: {'Accept': 'application/octet-stream'}});
+      if (!res.ok) {
+        var txt = await res.text();
+        throw new Error(txt || ('Erreur ' + res.status));
+      }
+      var cd = res.headers.get('Content-Disposition') || '';
+      var m = /filename="([^"]+)"/.exec(cd);
+      var blob = await res.blob();
+      download(m ? m[1] : ('import_' + batchId + '.rsc'), blob, 'application/octet-stream');
+      return true;
+    } catch (err) {
+      alert(err.message || 'Export MikroTik impossible');
+      return false;
+    } finally {
+      busy(false);
+    }
+  }
+
   function download(filename, content, type) {
     var blob = content instanceof Blob ? content : new Blob([content], {type: type || 'text/plain;charset=utf-8'});
     var a = document.createElement('a');
@@ -1053,6 +1114,10 @@ nav button:hover{background:rgba(255,255,255,.22)}
     download(r.filename, r.csv, 'text/csv;charset=utf-8');
   };
 
+  $('rscBtn').onclick = function () {
+    if (state.lastBatch) downloadRsc(state.lastBatch);
+  };
+
   async function loadBatches() {
     var d = await api('batches');
     if (!d.success) return;
@@ -1061,10 +1126,14 @@ nav button:hover{background:rgba(255,255,255,.22)}
         '<td>' + esc(b.plan_title || '—') + '</td>' +
         '<td>' + b.tickets_count + '</td><td>' + b.tickets_used + '</td>' +
         '<td><button class="ghost b-print" type="button" data-id="' + b.id + '">PDF</button> ' +
+        '<button class="ghost b-rsc" type="button" data-id="' + b.id + '">Import MikroTik</button> ' +
         '<button class="danger b-del" type="button" data-id="' + b.id + '">Suppr.</button></td></tr>';
     }).join('') || '<tr><td colspan="5" class="muted">Aucun lot</td></tr>';
     Array.prototype.forEach.call(document.querySelectorAll('.b-print'), function (btn) {
       btn.onclick = function () { downloadPdf(Number(btn.dataset.id)); };
+    });
+    Array.prototype.forEach.call(document.querySelectorAll('.b-rsc'), function (btn) {
+      btn.onclick = function () { downloadRsc(Number(btn.dataset.id)); };
     });
     Array.prototype.forEach.call(document.querySelectorAll('.b-del'), function (btn) {
       btn.onclick = async function () {
