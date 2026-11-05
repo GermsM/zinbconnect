@@ -480,16 +480,19 @@ function search_tickets(string $q, int $limit = 60): array
         return [$byCode];
     }
 
+    /* ESCAPE ? est indispensable sur SQLite (contrairement à MySQL, il n'y a
+       pas de caractère d'échappement par défaut) : sans cette clause, une
+       recherche contenant « % » ou « _ » ne remontait rien. */
     $like = '%' . str_replace(['%', '_'], ['\\%', '\\_'], $q) . '%';
     $stmt = db()->prepare(
         "SELECT t.*, s.name AS plan_name, b.reference AS batch_ref
          FROM tickets t
          LEFT JOIN subscriptions s ON s.id = t.subscription_id
          LEFT JOIN batches b ON b.id = t.batch_id
-         WHERE t.contact LIKE ? OR b.reference LIKE ? OR t.note LIKE ?
+         WHERE t.contact LIKE ? ESCAPE ? OR b.reference LIKE ? ESCAPE ? OR t.note LIKE ? ESCAPE ?
          ORDER BY t.id DESC LIMIT ?"
     );
-    $stmt->execute([$like, $like, $like, $limit]);
+    $stmt->execute([$like, '\\', $like, '\\', $like, '\\', $limit]);
     $rows = $stmt->fetchAll();
     foreach ($rows as &$r) {
         $r['state'] = ticket_state($r);
