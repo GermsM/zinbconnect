@@ -458,8 +458,10 @@ th{font-size:11px;text-transform:uppercase;color:var(--muted);letter-spacing:.3p
 .bar i.ko{background:#ef4444}
 .msg{display:none;margin-top:10px;padding:11px 12px;border-radius:9px;font-size:14px}
 .msg.show{display:block}
-.msg.ok{background:#f0fdf4;color:#14532d;border:1px solid #bbf7d0}
 .msg.ko{background:#fef2f2;color:#7f1d1d;border:1px solid #fecaca}
+#toasts{position:fixed;top:12px;left:50%;transform:translateX(-50%);z-index:80;display:flex;flex-direction:column;gap:8px;width:min(92vw,420px);pointer-events:none}
+.toast{background:#f0fdf4;border:1px solid #bbf7d0;color:#14532d;padding:12px 14px;border-radius:10px;font-size:14px;box-shadow:0 10px 30px rgba(0,0,0,.18);animation:rise .25s ease both}
+.toast.hide{opacity:0;transform:translateY(-8px);transition:opacity .35s ease,transform .35s ease}
 .muted{color:var(--muted);font-size:12px}
 .actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
 .pill{display:inline-block;background:#f5f3ff;border:1px solid #ddd6fe;color:#5b21b6;border-radius:8px;padding:4px 9px;font-size:12px;margin:2px 4px 2px 0}
@@ -490,7 +492,6 @@ nav button:hover{background:rgba(255,255,255,.22)}
 .loading.on{display:flex;animation:pop .15s ease both}
 .loading .box{background:#fff;border-radius:14px;padding:18px 22px;box-shadow:0 10px 40px rgba(0,0,0,.18);text-align:center;font-size:14px;font-weight:600;color:#4c1d95;max-width:78vw}
 .spin{width:26px;height:26px;border:3px solid #ddd6fe;border-top-color:#5b21b6;border-radius:50%;margin:0 auto 10px;animation:sp 1s linear infinite}
-.note{background:#faf5ff;border:1px solid #ede9fe;border-radius:10px;padding:10px 12px;font-size:12.5px;color:#4c1d95;margin-top:10px;line-height:1.45}
 .danger-zone{border:1px solid #fecaca;background:#fffafa}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
@@ -647,7 +648,6 @@ nav button:hover{background:rgba(255,255,255,.22)}
     <div class="card scroll">
       <table><thead><tr><th>Forfait</th><th>Prix (FC)</th><th>Durée</th><th>Plafond (Mo)</th><th></th></tr></thead><tbody id="plans-body"></tbody></table>
       <p class="muted">Plafond vide = illimité. Valeurs conseillées : 1 h = 100 Mo, 12 h = 300 Mo, 24 h = 500 Mo, 3 j = 1 024 Mo.</p>
-      <p class="note">Le plafond est un garde-fou technique : il n'apparaît <strong>jamais</strong> sur le portail, sur la carte imprimée ni après la saisie du code. Le client voit uniquement « illimité » pendant la durée de son forfait. Modifier un prix ici le met à jour partout (portail, tickets, ventes) immédiatement.</p>
       <div class="msg" id="plansMsg"></div>
     </div>
 
@@ -658,7 +658,6 @@ nav button:hover{background:rgba(255,255,255,.22)}
         <input id="s-name" type="text" maxlength="80">
         <label for="s-url">Adresse du portail (pour les QR codes)</label>
         <input id="s-url" type="url" placeholder="http://10.5.50.1/login">
-        <p class="note">C'est l'adresse que contiendra chaque QR code imprimé. Un client qui scanne la carte arrive directement sur le portail avec son code déjà rempli. Mettez l'adresse que le téléphone atteint <strong>une fois connecté au Wi-Fi</strong> (l'adresse du portail sur le routeur, par exemple <code>http://10.5.50.1/login</code>), et non une adresse Internet. Laissez vide si vous ne savez pas encore : le QR contiendra seulement le code, à taper à la main.</p>
         <div class="row2">
           <div>
             <label for="s-quota">Forfait Starlink (Go/mois)</label>
@@ -737,6 +736,8 @@ nav button:hover{background:rgba(255,255,255,.22)}
   </section>
 </main>
 
+<div id="toasts" aria-live="polite"></div>
+
 <div class="loading" id="loading" role="status" aria-live="polite">
   <div class="box"><div class="spin"></div><div id="loadingText">Traitement en cours…</div></div>
 </div>
@@ -788,9 +789,21 @@ nav button:hover{background:rgba(255,255,255,.22)}
   function stateLabel(st) {
     return {available:'Non utilisé', active:'En cours', used:'Consommé', expired:'Expiré', revoked:'Révoqué'}[st] || st;
   }
+  /* Confirmation de succès : pop-up temporaire (disparaît toute seule).
+     Erreurs : message en place, qui reste affiché pour pouvoir être lu. */
   function showMsg(el, text, ok) {
-    el.className = 'msg show ' + (ok ? 'ok' : 'ko');
+    if (ok) { toast(text); el.className = 'msg'; el.textContent = ''; return; }
+    el.className = 'msg show ko';
     el.textContent = text;
+  }
+  function toast(text) {
+    var t = document.createElement('div');
+    t.className = 'toast';
+    t.setAttribute('role', 'status');
+    t.textContent = text;
+    $('toasts').appendChild(t);
+    setTimeout(function () { t.classList.add('hide'); }, 4200);
+    setTimeout(function () { t.remove(); }, 4700);
   }
 
   var busyCount = 0;
