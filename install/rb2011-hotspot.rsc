@@ -71,7 +71,7 @@
 # utilisateur par l'export .rsc de l'application (limit-uptime,
 # limit-bytes-total), le profil ne fait que fixer le nombre d'appareils.
 :if ([:len [/ip hotspot user profile find name=code-usable]] = 0) do={
-  /ip hotspot user profile add name=code-usable shared-users=1 comment="Tickets zinbconnect : un appareil a la fois"
+  /ip hotspot user profile add name=code-usable shared-users=1
 } else={
   /ip hotspot user profile set [find name=code-usable] shared-users=1
 }
