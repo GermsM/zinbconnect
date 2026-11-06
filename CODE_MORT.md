@@ -6,6 +6,10 @@ Conformément à la règle de sécurité et de traçabilité, le nettoyage s'eff
 1. **Identification et preuve** (ce document).
 2. **Suppression dans un commit dédié**, facile à annuler si besoin.
 
+> **Statut d'exécution** :
+> Les suppressions et nettoyages recensés ci-dessous ont été exécutés et validés dans le commit `07f67ff` ("refactor(cleanup): suppression code mort, scripts de test et nettoyage des references d'hebergement abandonnees").
+> Tous les tests de non-régression sont au vert (18/18 tests réussis).
+
 ---
 
 ## 1. Fichiers à supprimer (avec preuve d'inutilité)
