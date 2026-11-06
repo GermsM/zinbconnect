@@ -77,36 +77,82 @@
 # ---------- 4. Bridge LAN + ports membres ----------
 # ETH2-4 (filaire) + ETH10 (EAP225). ETH5 reste HORS du bridge : c'est le
 # point qui separe l'administration des clients.
-/interface bridge add name=lan comment="Bridge LAN (eth2-4 filaire + eth10 AP Wi-Fi)"
-/interface bridge port add bridge=lan interface=ether2
-/interface bridge port add bridge=lan interface=ether3
-/interface bridge port add bridge=lan interface=ether4
-/interface bridge port add bridge=lan interface=eth-ap
+:if ([:len [/interface bridge find name=lan]] = 0) do={
+  /interface bridge add name=lan comment="Bridge LAN (eth2-4 filaire + eth10 AP Wi-Fi)"
+} else={
+  /interface bridge set [find name=lan] comment="Bridge LAN (eth2-4 filaire + eth10 AP Wi-Fi)"
+}
+
+:foreach p in={"ether2"; "ether3"; "ether4"; "eth-ap"} do={
+  :if ([:len [/interface bridge port find interface=$p]] = 0) do={
+    /interface bridge port add bridge=lan interface=$p
+  } else={
+    /interface bridge port set [find interface=$p] bridge=lan
+  }
+}
 # Radio 2,4 GHz integree desactivee : l'EAP225-Outdoor est le point d'acces unique.
 :do { /interface wireless set wlan1 disabled=yes } on-error={ }
 
 # ---------- 5. Adressage LAN clients ----------
-/ip address add address=10.20.30.1/24 interface=lan comment="Passerelle clients"
-/ip pool add name=lan-pool ranges=10.20.30.10-10.20.30.254
-/ip dhcp-server add name=lan-dhcp interface=lan address-pool=lan-pool lease-time=1h disabled=no comment="DHCP clients"
-/ip dhcp-server network add address=10.20.30.0/24 gateway=10.20.30.1 dns-server=10.20.30.1 comment="Reseau clients"
+:if ([:len [/ip address find interface=lan address~"10.20.30.1"]] = 0) do={
+  /ip address add address=10.20.30.1/24 interface=lan comment="Passerelle clients"
+}
+:if ([:len [/ip pool find name=lan-pool]] = 0) do={
+  /ip pool add name=lan-pool ranges=10.20.30.10-10.20.30.254
+} else={
+  /ip pool set [find name=lan-pool] ranges=10.20.30.10-10.20.30.254
+}
+:if ([:len [/ip dhcp-server find name=lan-dhcp]] = 0) do={
+  /ip dhcp-server add name=lan-dhcp interface=lan address-pool=lan-pool lease-time=1h disabled=no comment="DHCP clients"
+} else={
+  /ip dhcp-server set [find name=lan-dhcp] interface=lan address-pool=lan-pool disabled=no
+}
+:if ([:len [/ip dhcp-server network find address="10.20.30.0/24"]] = 0) do={
+  /ip dhcp-server network add address=10.20.30.0/24 gateway=10.20.30.1 dns-server=10.20.30.1 comment="Reseau clients"
+} else={
+  /ip dhcp-server network set [find address="10.20.30.0/24"] gateway=10.20.30.1 dns-server=10.20.30.1
+}
 
 # ---------- 5 bis. Reseau d'administration (ETH5) ----------
 # Un seul poste, aucun client : DHCP limite a 10 adresses, pas de hotspot.
-/ip address add address=10.20.50.1/24 interface=eth-admin comment="Passerelle admin"
-/ip pool add name=admin-pool ranges=10.20.50.10-10.20.50.20
-/ip dhcp-server add name=admin-dhcp interface=eth-admin address-pool=admin-pool lease-time=1h disabled=no comment="DHCP port admin"
-/ip dhcp-server network add address=10.20.50.0/24 gateway=10.20.50.1 dns-server=10.20.50.1 comment="Reseau admin"
+:if ([:len [/ip address find interface=eth-admin address~"10.20.50.1"]] = 0) do={
+  /ip address add address=10.20.50.1/24 interface=eth-admin comment="Passerelle admin"
+}
+:if ([:len [/ip pool find name=admin-pool]] = 0) do={
+  /ip pool add name=admin-pool ranges=10.20.50.10-10.20.50.20
+} else={
+  /ip pool set [find name=admin-pool] ranges=10.20.50.10-10.20.50.20
+}
+:if ([:len [/ip dhcp-server find name=admin-dhcp]] = 0) do={
+  /ip dhcp-server add name=admin-dhcp interface=eth-admin address-pool=admin-pool lease-time=1h disabled=no comment="DHCP port admin"
+} else={
+  /ip dhcp-server set [find name=admin-dhcp] interface=eth-admin address-pool=admin-pool disabled=no
+}
+:if ([:len [/ip dhcp-server network find address="10.20.50.0/24"]] = 0) do={
+  /ip dhcp-server network add address=10.20.50.0/24 gateway=10.20.50.1 dns-server=10.20.50.1 comment="Reseau admin"
+} else={
+  /ip dhcp-server network set [find address="10.20.50.0/24"] gateway=10.20.50.1 dns-server=10.20.50.1
+}
 
 # ---------- 6. DNS + NAT vers Starlink ----------
 /ip dns set allow-remote-requests=yes servers=1.1.1.1,9.9.9.9
 # Le routeur Starlink attribue l'adresse WAN en DHCP.
-/ip dhcp-client add interface=eth-wan disabled=no comment="Adresse WAN via Starlink"
+:if ([:len [/ip dhcp-client find interface=eth-wan]] = 0) do={
+  /ip dhcp-client add interface=eth-wan disabled=no comment="Adresse WAN via Starlink"
+} else={
+  /ip dhcp-client set [find interface=eth-wan] disabled=no
+}
 # Couvre aussi bien les clients (10.20.30.0/24) que le port admin (10.20.50.0/24).
-/ip firewall nat add chain=srcnat out-interface=eth-wan action=masquerade comment="NAT vers Starlink"
+:if ([:len [/ip firewall nat find comment="NAT vers Starlink"]] = 0) do={
+  /ip firewall nat add chain=srcnat out-interface=eth-wan action=masquerade comment="NAT vers Starlink"
+}
 # Forcer les requetes DNS des clients vers le DNS local (empeche le contournement par DNS externe)
-/ip firewall nat add chain=dstnat in-interface=lan protocol=udp dst-port=53 action=redirect to-ports=53 comment="Forcer DNS local UDP"
-/ip firewall nat add chain=dstnat in-interface=lan protocol=tcp dst-port=53 action=redirect to-ports=53 comment="Forcer DNS local TCP"
+:if ([:len [/ip firewall nat find comment="Forcer DNS local UDP"]] = 0) do={
+  /ip firewall nat add chain=dstnat in-interface=lan protocol=udp dst-port=53 action=redirect to-ports=53 comment="Forcer DNS local UDP"
+}
+:if ([:len [/ip firewall nat find comment="Forcer DNS local TCP"]] = 0) do={
+  /ip firewall nat add chain=dstnat in-interface=lan protocol=tcp dst-port=53 action=redirect to-ports=53 comment="Forcer DNS local TCP"
+}
 
 # ---------- 7. Acces distant : tunnel WireGuard vers un VPS relais ----------
 # Starlink place le routeur derriere un CGNAT : aucune redirection de port
@@ -122,8 +168,12 @@
 # La cle privee du routeur est generee automatiquement par RouterOS :
 # apres import, la lire avec /interface wireguard print (colonne public-key)
 # et la declarer cote VPS comme cle publique du pair "kitutu".
-/interface wireguard add name=wg-relay listen-port=51820 comment="Tunnel vers VPS relais Azure"
-/ip address add address=10.100.0.2/24 interface=wg-relay comment="Adresse du RB2011 dans le tunnel"
+:if ([:len [/interface wireguard find name=wg-relay]] = 0) do={
+  /interface wireguard add name=wg-relay listen-port=51820 comment="Tunnel vers VPS relais Azure"
+}
+:if ([:len [/ip address find interface=wg-relay address~"10.100.0.2"]] = 0) do={
+  /ip address add address=10.100.0.2/24 interface=wg-relay comment="Adresse du RB2011 dans le tunnel"
+}
 
 :local wgVpsIp "20.164.1.221"
 :local wgVpsKey "e3lbURoU6V/ySoAnQwTn0UQWIFttaDN4uKJNLH9cJg4="
@@ -194,25 +244,45 @@
 #   /tool mac-server mac-winbox set allowed-interface-list=none
 
 # Filtrage entrant minimal (sans config par defaut, RouterOS n'en met aucun).
-/ip firewall filter
-add chain=input action=accept connection-state=established,related comment="Reponses aux connexions ouvertes"
-add chain=input action=accept protocol=icmp comment="Ping (diagnostic)"
-add chain=input action=accept protocol=udp dst-port=68 in-interface=eth-wan comment="Bail DHCP du routeur Starlink"
-add chain=input action=accept protocol=udp dst-port=51820 in-interface=eth-wan comment="WireGuard (handshake cote VPS)"
-add chain=input action=accept in-interface=eth-admin comment="Port d'administration (ETH5)"
-add chain=input action=accept in-interface=wg-relay comment="Tunnel : acces complet (admin a distance)"
+:if ([:len [/ip firewall filter find comment="Reponses aux connexions ouvertes"]] = 0) do={
+  /ip firewall filter add chain=input action=accept connection-state=established,related comment="Reponses aux connexions ouvertes"
+}
+:if ([:len [/ip firewall filter find comment="Ping (diagnostic)"]] = 0) do={
+  /ip firewall filter add chain=input action=accept protocol=icmp comment="Ping (diagnostic)"
+}
+:if ([:len [/ip firewall filter find comment="Bail DHCP du routeur Starlink"]] = 0) do={
+  /ip firewall filter add chain=input action=accept protocol=udp dst-port=68 in-interface=eth-wan comment="Bail DHCP du routeur Starlink"
+}
+:if ([:len [/ip firewall filter find comment="WireGuard (handshake cote VPS)"]] = 0) do={
+  /ip firewall filter add chain=input action=accept protocol=udp dst-port=51820 in-interface=eth-wan comment="WireGuard (handshake cote VPS)"
+}
+:if ([:len [/ip firewall filter find comment="Port d'administration (ETH5)"]] = 0) do={
+  /ip firewall filter add chain=input action=accept in-interface=eth-admin comment="Port d'administration (ETH5)"
+}
+:if ([:len [/ip firewall filter find comment="Tunnel : acces complet (admin a distance)"]] = 0) do={
+  /ip firewall filter add chain=input action=accept in-interface=wg-relay comment="Tunnel : acces complet (admin a distance)"
+}
 # LAN clients : necessaire au hotspot (DHCP, DNS, portail). Les services
 # d'administration restent hors d'atteinte grace au filtre d'adresse de
 # /ip service ci-dessus.
-add chain=input action=accept in-interface=lan comment="LAN clients (DHCP, DNS, portail)"
-add chain=input action=drop in-interface=eth-wan comment="Rien d'autre depuis Starlink (CGNAT)"
-add chain=forward action=accept connection-state=established,related comment="Trafic clients etabli"
-add chain=forward action=drop connection-state=invalid comment="Trafic client invalide"
+:if ([:len [/ip firewall filter find comment="LAN clients (DHCP, DNS, portail)"]] = 0) do={
+  /ip firewall filter add chain=input action=accept in-interface=lan comment="LAN clients (DHCP, DNS, portail)"
+}
+:if ([:len [/ip firewall filter find comment="Rien d'autre depuis Starlink (CGNAT)"]] = 0) do={
+  /ip firewall filter add chain=input action=drop in-interface=eth-wan comment="Rien d'autre depuis Starlink (CGNAT)"
+}
+:if ([:len [/ip firewall filter find comment="Trafic clients etabli"]] = 0) do={
+  /ip firewall filter add chain=forward action=accept connection-state=established,related comment="Trafic clients etabli"
+}
+:if ([:len [/ip firewall filter find comment="Trafic client invalide"]] = 0) do={
+  /ip firewall filter add chain=forward action=drop connection-state=invalid comment="Trafic client invalide"
+}
 
 # ---------- 8 bis. Anti-tethering (empeche le partage Wi-Fi par smartphone) ----------
 # Force le TTL a 1 vers le LAN clients : le telephone du client recoit la connexion,
 # mais s'il tente de partager en Wi-Fi / point d'acces, le TTL tombe a 0 et le paquet est jete.
-/ip firewall mangle
-add chain=postrouting action=change-ttl new-ttl=set:1 out-interface=lan passthrough=no comment="Anti-tethering: empeche le partage hotspot par telephone"
+:if ([:len [/ip firewall mangle find comment="Anti-tethering: empeche le partage hotspot par telephone"]] = 0) do={
+  /ip firewall mangle add chain=postrouting action=change-ttl new-ttl=set:1 out-interface=lan passthrough=no comment="Anti-tethering: empeche le partage hotspot par telephone"
+}
 
 :log info "rb2011-base.rsc : configuration de base appliquee - WAN eth-wan (DHCP), LAN clients 10.20.30.1/24, port admin 10.20.50.1/24 (ETH5), PoE-Out eth10 actif, tunnel wg-relay 10.100.0.2"
