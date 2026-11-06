@@ -97,15 +97,24 @@
 #
 # Format et longueurs : exp= + 10 chiffres + " w=" + 8 chiffres + " u=" + 10 chiffres + " " + lot
 #   positions 0-3 "exp=", 4-13 date, 14-16 " w=", 17-24 fenetre, 25-27 " u=", 28-37 fin de stock.
+/system script remove [find name=code-validite-script]
+/system script add name=code-validite-script policy=read,write dont-require-permissions=no source=":local now ([:tonsec [:timestamp]] / 1000000000); :if (\$now > 1700000000) do={ :foreach u in=[/ip hotspot user find where comment~\"exp=\"] do={ :local c [/ip hotspot user get \$u comment]; :local e [:tonum [:pick \$c 4 14]]; :if (\$e = 0) do={ :if ([/ip hotspot user get \$u bytes-in] > 0) do={ /ip hotspot user set \$u comment=(\"exp=\" . \$now . [:pick \$c 14 [:len \$c]]) } else={ :if ([:pick \$c 26 28] = \"u=\") do={ :local uexp [:tonum [:pick \$c 28 38]]; :if (\$uexp > 1700000000 and \$now > \$uexp) do={ /ip hotspot user remove \$u } } } } else={ :local w [:tonum [:pick \$c 17 25]]; :if (\$now > (\$e + \$w)) do={ /ip hotspot user remove \$u } } } }"
+
 /system scheduler remove [find name=code-validite]
-/system scheduler add name=code-validite interval=2m policy=read,write on-event=":local now ([:tonsec [:timestamp]] / 1000000000); :if (\$now > 1700000000) do={ :foreach u in=[/ip hotspot user find where comment~\"exp=\"] do={ :local c [/ip hotspot user get \$u comment]; :local e [:tonum [:pick \$c 4 14]]; :if (\$e = 0) do={ :if ([/ip hotspot user get \$u bytes-in] > 0) do={ /ip hotspot user set \$u comment=(\"exp=\" . \$now . [:pick \$c 14 [:len \$c]]) } else={ :if ([:pick \$c 26 28] = \"u=\") do={ :local uexp [:tonum [:pick \$c 28 38]]; :if (\$uexp > 1700000000 and \$now > \$uexp) do={ /ip hotspot user remove \$u } } } } else={ :local w [:tonum [:pick \$c 17 25]]; :if (\$now > (\$e + \$w)) do={ /ip hotspot user remove \$u } } } }"
+/system scheduler add name=code-validite interval=2m policy=read,write on-event="/system script run code-validite-script"
 
 # ---------- 5 bis. Protection anti-brute-force sur le portail ----------
 # Limite les rafales de requetes vers le serveur web du hotspot (max 15/min par client)
 # pour empecher un assaillant de deviner les codes par force brute.
-:if ([:len [/ip firewall filter find comment=\"Anti-brute-force portail : rythme normal\"]] = 0) do={
-  /ip firewall filter add chain=input in-interface=lan protocol=tcp dst-port=80 connection-state=new dst-limit=15/1m,5,src-address/1m action=accept comment=\"Anti-brute-force portail : rythme normal\" place-before=[find chain=input in-interface=lan]
-  /ip firewall filter add chain=input in-interface=lan protocol=tcp dst-port=80 connection-state=new action=drop comment=\"Anti-brute-force portail : blocage rafales\" place-before=[find chain=input in-interface=lan]
+:if ([:len [/ip firewall filter find comment="Anti-brute-force portail : rythme normal"]] = 0) do={
+  :local pos [/ip firewall filter find comment="LAN clients (DHCP, DNS, portail)"]
+  :if ([:len $pos] > 0) do={
+    /ip firewall filter add chain=input in-interface=lan protocol=tcp dst-port=80 connection-state=new dst-limit=15/1m,5,src-address/1m action=accept comment="Anti-brute-force portail : rythme normal" place-before=($pos->0)
+    /ip firewall filter add chain=input in-interface=lan protocol=tcp dst-port=80 connection-state=new action=drop comment="Anti-brute-force portail : blocage rafales" place-before=($pos->0)
+  } else={
+    /ip firewall filter add chain=input in-interface=lan protocol=tcp dst-port=80 connection-state=new dst-limit=15/1m,5,src-address/1m action=accept comment="Anti-brute-force portail : rythme normal"
+    /ip firewall filter add chain=input in-interface=lan protocol=tcp dst-port=80 connection-state=new action=drop comment="Anti-brute-force portail : blocage rafales"
+  }
 }
 
 # ---------- 6. Verification ----------
