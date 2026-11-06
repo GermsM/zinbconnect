@@ -13,6 +13,12 @@
  *     première connexion du client (conforme au « temps démarre à l'usage ») ;
  *   - limit-bytes-total = quota de données total du ticket (0 octet échangé
  *     avant la première connexion) ;
+ *   - profile=code-usable : un seul appareil connecté à la fois
+ *     (shared-users=1, posé dans rb2011-hotspot.rsc) ;
+ *   - commentaire = « exp=0000000000 w=00086400 <lot> » : le routeur y
+ *     inscrit l'heure de la première connexion puis supprime le code au bout
+ *     de la fenêtre w. Sans cela, limit-uptime seul laisserait un ticket
+ *     « 24 h » vivant pendant des semaines (10 min d'usage par jour) ;
  *   - l'application ne voit pas l'usage réel du code (il faudrait la Voie 2,
  *     un pont local qui synchronise via l'API) : les statuts restent
  *     en app « disponibles » jusqu'à révocation/export suivant. Le suivi
@@ -76,7 +82,8 @@ function routeros_hotspot_import(array $rows, string $batchRef): ?string
         if ($limit !== null && $limit !== '' && (int)$limit > 0) {
             $props .= ' limit-bytes-total=' . (int)$limit;
         }
-        $props .= ' comment=' . routeros_quote($batchRef);
+        $props .= ' profile=' . routeros_quote('code-usable');
+        $props .= ' comment=' . routeros_quote(routeros_user_comment($batchRef, $uptime));
 
         // on-error : réimporter le même lot n'échoue pas et n'écrase rien
         // (l'utilisateur déjà présent reste tel quel).
@@ -101,17 +108,41 @@ function routeros_hotspot_import(array $rows, string $batchRef): ?string
         '# ============================================================',
         '',
     ];
+    // Garde-fou : sans le profil, /ip hotspot user add échouerait pour chaque
+    // code et le silence du on-error laisserait croire à un import réussi.
+    $lines[] = ':if ([:len [/ip hotspot user profile find name=code-usable]] = 0) do={';
+    $lines[] = '  :log warning "zinbconnect : profil code-usable ABSENT - importer install/rb2011-hotspot.rsc, puis relancer cet import"';
+    $lines[] = '} else={';
     foreach ($removes as $l) {
-        $lines[] = $l;
+        $lines[] = '  ' . $l;
     }
     foreach ($adds as $l) {
-        $lines[] = $l;
+        $lines[] = '  ' . $l;
     }
-    $lines[] = '';
-    $lines[] = ':log info "zinbconnect : import lot ' . $batchRef . ' applique"';
+    $lines[] = '  :log info "zinbconnect : import lot ' . $batchRef . ' applique"';
+    $lines[] = '}';
     $lines[] = '';
 
     return implode("\n", $lines);
+}
+
+/**
+ * Commentaire d'un utilisateur hotspot. Format lu par le planificateur
+ * « code-validite » du routeur (install/rb2011-hotspot.rsc) :
+ *
+ *     exp=0000000000 w=00086400 <lot>
+ *
+ * exp (10 chiffres) : date de première connexion en epoch, 0 = pas encore
+ *                     utilisé — le routeur la remplit lui-même ;
+ * w   (8 chiffres)  : fenêtre de validité en secondes.
+ *
+ * Les positions sont FIXES (date aux caractères 4-14, durée aux 17-25).
+ * Changer ce format sans changer le script du routeur casse l'expiration.
+ */
+function routeros_user_comment(string $batchRef, int $window): string
+{
+    $window = max(60, min(99999999, $window));
+    return sprintf('exp=%010d w=%08d %s', 0, $window, $batchRef);
 }
 
 /** Nom de fichier conseillé pour l'import de ce lot (router Files). */

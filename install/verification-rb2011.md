@@ -157,7 +157,14 @@ fonctionne.
 ```
 
 - `telnet`, `ftp`, `api` : drapeau **X** (désactivés) ;
-- `winbox`, `www`, `ssh` : colonne `address` = `10.20.30.0/24,10.20.40.0/24`.
+- `winbox`, `www`, `ssh` : colonne `address` = `10.20.40.0/24,10.20.50.0/24`.
+  Autrement dit : le tunnel (`.40`) et le port d'administration ETH5 (`.50`),
+  **jamais** `10.20.30.0/24`.
+
+> C'est volontaire : `10.20.30.0/24`, c'est le réseau des **clients** du
+> hotspot (Wi-Fi de l'EAP225). L'autoriser reviendrait à laisser chaque
+> client du portail tenter de joindre WinBox sur 10.20.30.1.
+> Sur site, sans tunnel : PC branché sur **ETH5**, adresse `10.20.50.x`.
 
 ```
 /ip firewall filter print stats
@@ -166,8 +173,9 @@ fonctionne.
 - l'ordre doit être : accepts, puis `drop` depuis `eth-wan` en dernier ;
 - le compteur de la règle **drop** augmente lentement (balayages Internet
   bloqués) : normal ;
-- les règles `accept in-interface=lan` et `accept in-interface=wg-relay`
-  comptent beaucoup : c'est le trafic d'administration, normal aussi.
+- les règles `accept in-interface=lan` (DHCP, DNS et portail des clients) et
+  `accept in-interface=wg-relay` comptent beaucoup : normal ;
+- `accept in-interface=eth-admin` : trafic du portable d'administration.
 
 ```
 /ip firewall nat print stats
@@ -191,7 +199,8 @@ doit contenir uniquement le `masquerade` sortant vers `eth-wan`.
 ```
 
 - hotspot `hotspot1` sur `lan`, profil `zinbconnect`, `enabled: yes` ;
-- profil avec `html-directory: zinbconnect` et `login-by: http-pam` ;
+- profil avec `html-directory: zinbconnect` et `login-by: http-chap` ;
+- profil utilisateur `code-usable` avec `shared-users: 1` ;
 - 3 entrées de walled garden (DNS UDP, DNS TCP, ICMP) ;
 - le compteur d'utilisateurs doit augmenter du **nombre de codes du lot
   importé** (les codes des lots précédents restent présents, ils ne sont pas
@@ -207,10 +216,20 @@ Doit afficher `comment: <référence du lot>` (le code vient bien de l'import
 attendu) et `limit-uptime` / `limit-bytes-total` cohérents avec le forfait
 vendu (ex. `1h`, `104857600`).
 
-Note : l'export généré par l'admin ne pose pas de `profile` — les codes
-utilisent donc le profil `default` (sans limite, les limites étant fixées
-utilisateur par utilisateur). Le profil `code-usable` créé par
-`rb2011-hotspot.rsc` reste vide, c'est sans effet.
+Le commentaire doit ressembler à `exp=0000000000 w=00086400 <lot>` :
+`exp` à zéro = code jamais utilisé encore, `w` = fenêtre de validité en
+secondes (86400 = 24 h). Après la première connexion du client, `exp` est
+remplacé par la date (epoch) et le code disparaît une fois `exp + w` dépassé.
+
+Vérifier que le mécanisme tourne :
+
+```
+/system scheduler print
+```
+
+`code-validite` (`interval: 2m`) et `wg-watchdog` (`interval: 5m`) doivent y
+être. Sans `code-validite`, un ticket « 24 h » resterait valable des semaines
+(le temps n'est décompté que connecté).
 
 Un code révoqué dans l'application doit **disparaître** de cette liste après
 réimport du lot : c'est ainsi que la révocation arrive au routeur.

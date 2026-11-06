@@ -37,12 +37,18 @@ Internet fiable sur place, mieux vaut l'avoir d'avance.
 | Port | Vers | Remarque |
 |---|---|---|
 | ETH1 `eth-wan` | routeur Starlink (LAN) | câble Ethernet standard |
-| ETH2–ETH5 | LAN filaire éventuel | laissés actifs |
+| ETH2–ETH4 | LAN filaire éventuel | laissés actifs (clients) |
+| ETH5 | PC portable d'administration | `10.20.50.1/24`, hors hotspot |
 | ETH6–ETH9 | — | désactivés dans la config |
 | ETH10 `eth-ap` | EAP225-Outdoor | PoE passif, câble **< 30 m** (chute de tension) |
 | Alimentation | adaptateur 24 V 1,2 A | alimente aussi le PoE d'ETH10 |
 
 L'EAP doit être **configuré avant** d'être branché sur ETH10 (étape 2).
+
+Après l'import, l'administration ne passe plus que par **ETH5** ou par le
+tunnel : le réseau des clients (`10.20.30.0/24`) n'a plus accès à WinBox, SSH
+ni WebFig. C'est voulu — sinon n'importe quel client du portail pourrait s'y
+connecter.
 
 Le routeur Starlink reste en mode routeur : le RB2011 reçoit une adresse en
 `100.64.x.x` par DHCP. C'est normal (CGNAT), et c'est précisément pourquoi
@@ -87,6 +93,10 @@ L'EAP n'est pas géré par un contrôleur : il travaille en autonome.
 ```
 
 5. Ce n'est qu'ensuite que l'on branche le câble Starlink sur ETH1.
+6. Après l'import de `rb2011-base.rsc`, continuer en WinBox par **MAC**
+   (Neighbors) : les services IP ne répondent plus qu'à `10.20.50.x` et au
+   tunnel. Pour repasser en IP, brancher le PC sur ETH5 (il reçoit une adresse
+   en `10.20.50.x`).
 
 À ce stade le routeur est injoignable depuis Internet (aucune config WAN) :
 c'est l'ordre voulu.

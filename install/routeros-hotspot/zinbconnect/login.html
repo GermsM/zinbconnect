@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Zinbconnect — Wi-Fi Kitutu</title>
 <style>
-  /* Page autonome : aucun lien externe (aucun CDN). */
+  /* Page autonome : aucun lien externe (aucun CDN, aucun md5.js à déposer). */
   * { box-sizing: border-box; }
   body {
     margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
@@ -16,18 +16,19 @@
          box-shadow: 0 12px 40px rgba(0,0,0,.35); text-align: center; }
   h1 { margin: 0 0 6px; font-size: 22px; letter-spacing: .5px; }
   .sub { margin: 0 0 18px; font-size: 14px; color: #9fc3d4; }
-  input[name="code"] {
+  input#code {
     width: 100%; padding: 14px 12px; font-size: 18px; text-align: center; letter-spacing: 2px;
     border: 2px solid #2b5672; border-radius: 10px; background: #0e2a3a; color: #fff;
     text-transform: uppercase; outline: none;
   }
-  input[name="code"]:focus { border-color: #4c9f7a; }
+  input#code:focus { border-color: #4c9f7a; }
   button {
     width: 100%; margin-top: 14px; padding: 14px; font-size: 16px; font-weight: 600;
     border: 0; border-radius: 10px; background: #4c9f7a; color: #fff; cursor: pointer;
   }
   button:active { transform: scale(.98); }
   .err { margin: 14px 0 0; font-size: 14px; color: #ff9c9c; }
+  .net { margin: 12px 0 0; font-size: 13px; color: #9fc3d4; }
   .help { margin: 18px 0 0; font-size: 12px; color: #7da7bb; line-height: 1.5; }
 </style>
 </head>
@@ -35,36 +36,112 @@
 <main>
   <h1>Zinbconnect</h1>
   <p class="sub">Wi-Fi Kitutu — entrez le code de votre ticket</p>
-  <form name="login" action="$(link-login-only)" method="post">
+
+  <!-- action = servlet de login ; onsubmit passera par go() pour le CHAP -->
+  <form name="login" action="$(link-login-only)" method="post" accept-charset="utf-8"
+        onsubmit="return go(event);">
     <input type="hidden" name="dst" value="$(link-orig)">
     <input type="hidden" name="popup" value="false">
     <input type="hidden" name="username" value="">
     <input type="hidden" name="password" value="">
-    <!-- champ unique : la même valeur devient username et password -->
-    <input type="text" name="code" maxlength="14" autocomplete="off"
-           autocapitalize="characters" spellcheck="false"
-           placeholder="CODE À 12 CARACTÈRES" onkeydown="submit_(event)">
-    <button type="button" onclick="login_(form)">Se connecter</button>
+    <!-- Pas d'attribut name : le code tapé n'est JAMAIS transmis brut.
+         Seul username (le code) et password (MD5 en mode CHAP) partent. -->
+    <input id="code" type="text" maxlength="14" autocomplete="off" autocapitalize="characters"
+           spellcheck="false" inputmode="text" placeholder="CODE À 12 CARACTÈRES">
+    <button type="submit">Se connecter</button>
   </form>
+
   $(if error)<p class="err">$(error)</p>$(endif)
   <p class="help">Achat : auprès des revendeurs de Zinbconnect.<br>
-  Un code = un forfait utilisable sur un appareil.</p>
+  Un code = un appareil à la fois.</p>
 </main>
+
 <script>
-/* Saisie assouplie : majuscules, espaces et tirets retirés, puis le code
-   alimente à la fois username et password (login utilisateur hotspot). */
+/* Défi CHAP fourni par le routeur (login-by=http-chap). Le mot de passe
+   envoyé est MD5(chap-id + code + chap-challenge) : le code ne circule
+   jamais en clair, même sur un Wi-Fi ouvert. */
+var CHAP_ID = '', CHAP_CHALLENGE = '';
+$(if chap-id)
+CHAP_ID = '$(chap-id)';
+CHAP_CHALLENGE = '$(chap-challenge)';
+$(endif)
+
+/* Saisie assouplie : majuscules, espaces et tirets retirés. */
 function _clean(s) {
   return String(s || '').replace(/[\s\-_\.]/g, '').toUpperCase();
 }
-function login_(f) {
-  var c = _clean(new FormData(f).get('code'));
-  if (c.length < 8) return; // rejeter trop court, couper avant l'envoi
-  f.username.value = c;
-  f.password.value = c;
-  f.submit();
+
+function go(ev) {
+  if (ev && ev.preventDefault) { ev.preventDefault(); }
+  var f = document.forms.login;
+  var c = _clean(document.getElementById('code').value);
+  if (c.length < 8) {
+    alert('Code incomplet : vérifiez les 12 caractères de votre ticket.');
+    return false;
+  }
+  f.elements.username.value = c;
+  f.elements.password.value = CHAP_ID ? hex_md5(CHAP_ID + c + CHAP_CHALLENGE) : c;
+  f.submit();   /* méthode submit() : ne repasse pas par onsubmit */
+  return false;
 }
-function submit_(e) {
-  if (e.key === 'Enter') { e.preventDefault(); login_(document.forms.login); }
+
+/* MD5 (RFC 1321) — implémentation locale, entrées ASCII.
+   Vérifiée sur les vecteurs officiels MD5("") et MD5("abc"). */
+function hex_md5(input) {
+  var K = [
+    0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
+    0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821,
+    0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa, 0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8,
+    0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed, 0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a,
+    0xfffa3942, 0x8771f681, 0x6d9d6122, 0xfde5380c, 0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70,
+    0x289b7ec6, 0xeaa127fa, 0xd4ef3085, 0x04881d05, 0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665,
+    0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
+    0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1, 0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391
+  ];
+  var S = [7, 12, 17, 22, 5, 9, 14, 20, 4, 11, 16, 23, 6, 10, 15, 21];
+
+  var bytes = [];
+  for (var i = 0; i < input.length; i++) bytes.push(input.charCodeAt(i) & 0xff);
+  var bitLen = bytes.length * 8;
+  bytes.push(0x80);
+  while (bytes.length % 64 !== 56) bytes.push(0);
+  bytes.push(bitLen & 0xff, (bitLen >>> 8) & 0xff, (bitLen >>> 16) & 0xff, (bitLen >>> 24) & 0xff, 0, 0, 0, 0);
+
+  var a0 = 0x67452301, b0 = 0xefcdab89, c0 = 0x98badcfe, d0 = 0x10325476;
+
+  for (var off = 0; off < bytes.length; off += 64) {
+    var M = [];
+    for (var j = 0; j < 16; j++) {
+      M[j] = bytes[off + j * 4] | (bytes[off + j * 4 + 1] << 8) |
+             (bytes[off + j * 4 + 2] << 16) | (bytes[off + j * 4 + 3] << 24);
+    }
+    var A = a0, B = b0, C = c0, D = d0;
+    for (var k = 0; k < 64; k++) {
+      var F, g;
+      if (k < 16) { F = (B & C) | (~B & D); g = k; }
+      else if (k < 32) { F = (D & B) | (~D & C); g = (5 * k + 1) % 16; }
+      else if (k < 48) { F = B ^ C ^ D; g = (3 * k + 5) % 16; }
+      else { F = C ^ (B | ~D); g = (7 * k) % 16; }
+      var tmp = D;
+      D = C;
+      C = B;
+      var x = (A + F + K[k] + M[g]) | 0;
+      var s = S[k % 4 + 4 * Math.floor(k / 16)];
+      B = (B + ((x << s) | (x >>> (32 - s)))) | 0;
+      A = tmp;
+    }
+    a0 = (a0 + A) | 0; b0 = (b0 + B) | 0; c0 = (c0 + C) | 0; d0 = (d0 + D) | 0;
+  }
+
+  function h(n) {
+    var out = '';
+    for (var i = 0; i < 4; i++) {
+      var b = (n >>> (i * 8)) & 0xff;
+      out += (b < 16 ? '0' : '') + b.toString(16);
+    }
+    return out;
+  }
+  return h(a0) + h(b0) + h(c0) + h(d0);
 }
 </script>
 </body>

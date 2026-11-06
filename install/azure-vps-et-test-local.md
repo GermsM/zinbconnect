@@ -248,6 +248,10 @@ PersistentKeepalive = 25
 Si l'étape 5 échoue alors que `wg show` sur le VPS voit le PC : c'est le
 pare-feu du VPS ou l'`AllowedIPs` côté routeur (doit couvrir `10.20.40.10`).
 
+> Sans tunnel (test local, panne), on administre le routeur par **ETH5**
+> (`10.20.50.x`) ou par MAC-WinBox. Depuis le Wi-Fi du hotspot, WinBox et SSH
+> sont volontairement injoignables : `10.20.30.0/24` est le réseau des clients.
+
 ---
 
 ## Partie E — Tester le portail et les codes
