@@ -3,42 +3,132 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Zinbconnect — ma session</title>
+<meta name="theme-color" content="#5b21b6">
+<title>Zinbconnect — Ma session</title>
 $(if refresh-timeout)<meta http-equiv="refresh" content="$(refresh-timeout)">$(endif)
 <style>
-  /* Page autonome : aucun lien externe (aucun CDN). */
-  body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
-         font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-         background: #0e2a3a; color: #eef6fa; padding: 16px; }
-  main { width: 100%; max-width: 380px; background: #123247; border-radius: 14px; padding: 26px 24px;
-         box-shadow: 0 12px 40px rgba(0,0,0,.35); }
-  h1 { margin: 0 0 14px; font-size: 20px; text-align: center; }
-  table { width: 100%; border-collapse: collapse; font-size: 14px; }
-  th { text-align: left; color: #9fc3d4; font-weight: 500; padding: 8px 4px; border-bottom: 1px solid #2b5672; }
-  td { padding: 8px 4px; border-bottom: 1px solid #22485f; font-weight: 600; }
-  td:last-child { text-align: right; color: #8fd4ae; }
-  .actions { margin-top: 18px; text-align: center; }
-  button { width: 100%; padding: 12px; font-size: 15px; font-weight: 600; border: 0; border-radius: 10px;
-           background: #b34a4a; color: #fff; cursor: pointer; }
-  p.small { margin: 14px 0 0; font-size: 12px; color: #7da7bb; text-align: center; line-height: 1.5; }
+:root {
+  --v: #5b21b6;
+  --v2: #7c3aed;
+  --v3: #a78bfa;
+  --bg1: #f5f3ff;
+  --bg2: #ede9fe;
+  --card: #fff;
+  --txt: #1f2937;
+  --muted: #6b7280;
+  --line: #ede9fe;
+  --ok: #15803d;
+  --ko: #b91c1c;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  color: var(--txt);
+  line-height: 1.45;
+  font-size: 17px;
+  background: linear-gradient(160deg, var(--bg1) 0%, #fff 45%, var(--bg2) 100%);
+  background-attachment: fixed;
+  min-height: 100vh;
+}
+.wrap { max-width: 520px; margin: 0 auto; padding: 14px 14px 36px; }
+header { display: flex; align-items: center; gap: 11px; padding: 8px 0 16px; animation: fade .5s ease both; }
+.logo {
+  width: 42px; height: 42px; border-radius: 12px;
+  background: linear-gradient(135deg, var(--v), var(--v3));
+  color: #fff; display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: 19px; box-shadow: 0 6px 16px rgba(91,33,182,.28);
+}
+h1 { font-size: 19px; margin: 0; line-height: 1.2; letter-spacing: -.2px; }
+header p { margin: 3px 0 0; font-size: 12.5px; color: var(--muted); }
+
+.card {
+  background: var(--card); border-radius: 16px; padding: 18px;
+  box-shadow: 0 2px 10px rgba(76,29,149,.07), 0 1px 2px rgba(0,0,0,.04);
+  margin-bottom: 14px; border: 1px solid rgba(237,233,254,.9);
+  animation: rise .45s ease both;
+}
+h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .7px; color: #7c3aed; margin: 0 0 14px; font-weight: 800; }
+
+.big-stat { font-size: 32px; font-weight: 800; color: var(--v); letter-spacing: -.5px; margin: 4px 0 14px; }
+.rows { display: flex; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+.row { flex: 1 1 140px; background: #faf5ff; border: 1px solid #f3e8ff; border-radius: 10px; padding: 10px 12px; }
+.row span { display: block; font-size: 12px; color: var(--muted); margin-bottom: 2px; }
+.row strong { font-size: 16px; color: #3b0764; }
+
+button.logout {
+  width: 100%; margin-top: 16px; padding: 14px; font-size: 16px; font-weight: 700;
+  color: #b91c1c; background: #fef2f2; border: 1.5px solid #fecaca;
+  border-radius: 12px; cursor: pointer; transition: background .15s ease;
+}
+button.logout:active { background: #fee2e2; }
+
+.btn-surf {
+  display: block; text-align: center; margin-top: 12px; padding: 14px;
+  background: linear-gradient(135deg, var(--v), var(--v2)); color: #fff;
+  font-weight: 700; text-decoration: none; border-radius: 12px;
+  box-shadow: 0 6px 16px rgba(91,33,182,.25);
+}
+
+.hint { font-size: 13px; color: var(--muted); margin-top: 12px; text-align: center; line-height: 1.5; }
+footer { text-align: center; font-size: 12px; color: var(--muted); margin-top: 18px; }
+
+@keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+@keyframes fade { from { opacity: 0; } to { opacity: 1; } }
 </style>
 </head>
 <body>
-<main>
-  <h1>Ma session Wi-Fi</h1>
-  <table>
-    <tr><th>Temps restant</th><td>$(session-time-left)</td></tr>
-    <tr><th>Téléchargé</th><td>$(bytes-in-nice)</td></tr>
-    <tr><th>Envoyé</th><td>$(bytes-out-nice)</td></tr>
-    $(if limit-uptime)<tr><th>Temps maximum</th><td>$(limit-uptime)</td></tr>$(endif)
-  </table>
-  <div class="actions">
-    <form name="logout" action="$(link-logout)" method="post">
-      <button type="submit">Se déconnecter</button>
-    </form>
-  </div>
-  <p class="small">Le ticket s'arrête tout seul à la fin du temps ou des
-  mégaoctets autorisés — rien à gérer.</p>
-</main>
+<div class="wrap">
+  <header>
+    <div class="logo">Z</div>
+    <div>
+      <h1>Zinbconnect</h1>
+      <p>Wi-Fi à Kitutu — session en cours</p>
+    </div>
+  </header>
+
+  <main>
+    <section class="card">
+      <h2>Votre connexion</h2>
+      <div>Temps restant :</div>
+      <div class="big-stat">$(session-time-left)</div>
+
+      <div class="rows">
+        <div class="row">
+          <span>Données reçues</span>
+          <strong>$(bytes-in-nice)</strong>
+        </div>
+        <div class="row">
+          <span>Données envoyées</span>
+          <strong>$(bytes-out-nice)</strong>
+        </div>
+      </div>
+      $(if limit-uptime)
+      <div class="rows" style="margin-top:8px">
+        <div class="row">
+          <span>Durée maximale</span>
+          <strong>$(limit-uptime)</strong>
+        </div>
+        <div class="row">
+          <span>Identifiant</span>
+          <strong>$(username)</strong>
+        </div>
+      </div>
+      $(endif)
+
+      <a class="btn-surf" href="http://google.com">Continuer à naviguer</a>
+
+      <form name="logout" action="$(link-logout)" method="post">
+        <button class="logout" type="submit">Se déconnecter</button>
+      </form>
+
+      <p class="hint">Vous pouvez vous déconnecter pour préserver votre temps restant et vous reconnecter plus tard avec le même code.</p>
+    </section>
+  </main>
+
+  <footer>
+    Zinbconnect · Accès Wi-Fi Public
+  </footer>
+</div>
 </body>
 </html>

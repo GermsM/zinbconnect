@@ -3,61 +3,231 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Zinbconnect — Wi-Fi Kitutu</title>
+<meta name="theme-color" content="#5b21b6">
+<title>Zinbconnect — Connexion Wi-Fi</title>
 <style>
-  /* Page autonome : aucun lien externe (aucun CDN, aucun md5.js à déposer). */
-  * { box-sizing: border-box; }
-  body {
-    margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
-    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-    background: #0e2a3a; color: #eef6fa; padding: 16px;
-  }
-  main { width: 100%; max-width: 380px; background: #123247; border-radius: 14px; padding: 28px 24px;
-         box-shadow: 0 12px 40px rgba(0,0,0,.35); text-align: center; }
-  h1 { margin: 0 0 6px; font-size: 22px; letter-spacing: .5px; }
-  .sub { margin: 0 0 18px; font-size: 14px; color: #9fc3d4; }
-  input#code {
-    width: 100%; padding: 14px 12px; font-size: 18px; text-align: center; letter-spacing: 2px;
-    border: 2px solid #2b5672; border-radius: 10px; background: #0e2a3a; color: #fff;
-    text-transform: uppercase; outline: none;
-  }
-  input#code:focus { border-color: #4c9f7a; }
-  button {
-    width: 100%; margin-top: 14px; padding: 14px; font-size: 16px; font-weight: 600;
-    border: 0; border-radius: 10px; background: #4c9f7a; color: #fff; cursor: pointer;
-  }
-  button:active { transform: scale(.98); }
-  .err { margin: 14px 0 0; font-size: 14px; color: #ff9c9c; }
-  .net { margin: 12px 0 0; font-size: 13px; color: #9fc3d4; }
-  .help { margin: 18px 0 0; font-size: 12px; color: #7da7bb; line-height: 1.5; }
+:root {
+  --v: #5b21b6;
+  --v2: #7c3aed;
+  --v3: #a78bfa;
+  --bg1: #f5f3ff;
+  --bg2: #ede9fe;
+  --card: #fff;
+  --txt: #1f2937;
+  --muted: #6b7280;
+  --line: #ede9fe;
+  --ok: #15803d;
+  --ko: #b91c1c;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  color: var(--txt);
+  line-height: 1.45;
+  font-size: 17px;
+  background: linear-gradient(160deg, var(--bg1) 0%, #fff 45%, var(--bg2) 100%);
+  background-attachment: fixed;
+  min-height: 100vh;
+}
+.wrap { max-width: 520px; margin: 0 auto; padding: 14px 14px 36px; }
+header { display: flex; align-items: center; gap: 11px; padding: 8px 0 16px; animation: fade .5s ease both; }
+.logo {
+  width: 42px; height: 42px; border-radius: 12px;
+  background: linear-gradient(135deg, var(--v), var(--v3));
+  color: #fff; display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: 19px; box-shadow: 0 6px 16px rgba(91,33,182,.28);
+  position: relative; overflow: hidden;
+}
+.logo::after {
+  content: ""; position: absolute; inset: -40%;
+  background: linear-gradient(115deg, transparent 40%, rgba(255,255,255,.55) 50%, transparent 60%);
+  animation: shine 4.5s ease-in-out infinite;
+}
+h1 { font-size: 19px; margin: 0; line-height: 1.2; letter-spacing: -.2px; }
+header p { margin: 3px 0 0; font-size: 12.5px; color: var(--muted); }
+.bars { display: inline-flex; align-items: flex-end; gap: 2px; height: 12px; margin-left: 6px; vertical-align: middle; }
+.bars i { width: 3px; background: var(--v3); border-radius: 2px; transform-origin: bottom; animation: signal 1.6s ease-in-out infinite; }
+.bars i:nth-child(1) { height: 5px; }
+.bars i:nth-child(2) { height: 8px; animation-delay: .2s; }
+.bars i:nth-child(3) { height: 12px; animation-delay: .4s; }
+
+.card {
+  background: var(--card); border-radius: 16px; padding: 18px;
+  box-shadow: 0 2px 10px rgba(76,29,149,.07), 0 1px 2px rgba(0,0,0,.04);
+  margin-bottom: 14px; border: 1px solid rgba(237,233,254,.9);
+  animation: rise .45s ease both;
+}
+.card:nth-of-type(2) { animation-delay: .06s; }
+.card:nth-of-type(3) { animation-delay: .12s; }
+
+label { display: block; font-weight: 700; font-size: 14px; margin-bottom: 8px; color: #3b0764; }
+input[type=text] {
+  width: 100%; padding: 15px 13px; font-size: 22px; letter-spacing: 2.5px;
+  font-family: ui-monospace, Consolas, monospace; text-transform: uppercase;
+  border: 2px solid var(--line); border-radius: 12px; background: #fdfcff;
+  color: var(--txt); transition: border-color .2s, box-shadow .2s;
+}
+input[type=text]::placeholder { letter-spacing: 1px; font-size: 17px; color: #b3aec4; }
+input[type=text]:focus { outline: none; border-color: var(--v2); box-shadow: 0 0 0 4px rgba(124,58,237,.14); background: #fff; }
+
+button {
+  width: 100%; margin-top: 12px; padding: 15px; font-size: 17px; font-weight: 700;
+  color: #fff; background: linear-gradient(135deg, var(--v), var(--v2));
+  border: 0; border-radius: 12px; cursor: pointer;
+  box-shadow: 0 6px 16px rgba(91,33,182,.25);
+  transition: transform .12s ease, box-shadow .2s, opacity .2s;
+  -webkit-tap-highlight-color: transparent;
+}
+button:active { transform: scale(.985); box-shadow: 0 3px 8px rgba(91,33,182,.22); }
+button:disabled { opacity: .6; }
+button.ghost {
+  background: #f5f3ff; color: var(--v); border: 1.5px solid #ddd6fe;
+  box-shadow: none; font-size: 15.5px; margin-top: 10px;
+}
+button.ghost:active { transform: scale(.99); }
+
+.hint { font-size: 12.5px; color: var(--muted); margin-top: 8px; }
+.msg { margin-top: 14px; padding: 14px; border-radius: 12px; font-size: 15px; display: none; animation: rise .25s ease both; }
+.msg.show { display: block; }
+.msg.ok { background: linear-gradient(180deg, #f0fdf4, #dcfce7); border: 1px solid #bbf7d0; color: #14532d; }
+.msg.ko { background: #fef2f2; border: 1px solid #fecaca; color: #7f1d1d; }
+.msg b { font-size: 17px; display: block; margin-bottom: 4px; }
+
+h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .7px; color: #7c3aed; margin: 0 0 10px; font-weight: 800; }
+.plan { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 11px 0; border-bottom: 1px solid var(--line); font-size: 15px; }
+.plan:last-child { border-bottom: 0; padding-bottom: 0; }
+.plan div:first-child { display: flex; flex-direction: column; }
+.plan strong { font-size: 17px; color: var(--v); }
+.plan em { font-style: normal; color: var(--muted); font-size: 13px; }
+.tag { background: #ede9fe; color: #5b21b6; border-radius: 99px; padding: 4px 10px; font-size: 11.5px; font-weight: 700; white-space: nowrap; }
+
+details {
+  background: var(--card); border-radius: 16px; padding: 4px 18px;
+  box-shadow: 0 2px 10px rgba(76,29,149,.07); border: 1px solid rgba(237,233,254,.9);
+  animation: rise .45s ease both; animation-delay: .18s;
+}
+summary {
+  cursor: pointer; font-weight: 700; font-size: 15px; padding: 13px 0;
+  list-style: none; display: flex; justify-content: space-between; align-items: center;
+}
+summary::-webkit-details-marker { display: none; }
+summary::after { content: "＋"; color: var(--v2); font-weight: 700; }
+details[open] summary::after { content: "−"; }
+details p, details li { font-size: 14px; color: #374151; line-height: 1.5; }
+details ul { padding-left: 18px; margin: 0 0 12px; }
+details li { margin-bottom: 7px; }
+
+footer { text-align: center; font-size: 12px; color: var(--muted); margin-top: 18px; }
+footer a { color: var(--v); }
+
+#camWrap { display: none; margin-top: 12px; border-radius: 14px; overflow: hidden; background: #000; position: relative; }
+#camWrap.on { display: block; animation: rise .25s ease both; }
+#cam { width: 100%; display: block; max-height: 60vh; object-fit: cover; }
+#camHint { position: absolute; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,.55); color: #fff; font-size: 12.5px; padding: 8px 10px; text-align: center; }
+
+@keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+@keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes shine { 0%, 70% { transform: translateX(-120%); } 100% { transform: translateX(120%); } }
+@keyframes signal { 0%, 100% { transform: scaleY(.55); opacity: .6; } 50% { transform: scaleY(1); opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { * { animation: none!important; transition: none!important; } }
 </style>
 </head>
 <body>
-<main>
-  <h1>Zinbconnect</h1>
-  <p class="sub">Wi-Fi Kitutu — entrez le code de votre ticket</p>
+<div class="wrap">
+  <header>
+    <div class="logo">Z</div>
+    <div>
+      <h1>Zinbconnect<span class="bars" aria-hidden="true"><i></i><i></i><i></i></span></h1>
+      <p>Wi-Fi à Kitutu — entrez votre code pour vous connecter</p>
+    </div>
+  </header>
 
-  <!-- action = servlet de login ; onsubmit passera par go() pour le CHAP -->
-  <form name="login" action="$(link-login-only)" method="post" accept-charset="utf-8"
-        onsubmit="return go(event);">
-    <input type="hidden" name="dst" value="$(link-orig)">
-    <input type="hidden" name="popup" value="false">
-    <input type="hidden" name="username" value="">
-    <input type="hidden" name="password" value="">
-    <!-- Pas d'attribut name : le code tapé n'est JAMAIS transmis brut.
-         Seul username (le code) et password (MD5 en mode CHAP) partent. -->
-    <input id="code" type="text" maxlength="14" autocomplete="off" autocapitalize="characters"
-           spellcheck="false" inputmode="text" placeholder="CODE À 12 CARACTÈRES">
-    <button type="submit">Se connecter</button>
-  </form>
+  <main>
+    <section class="card">
+      <form name="login" action="$(link-login-only)" method="post" accept-charset="utf-8" onsubmit="return go(event);">
+        <input type="hidden" name="dst" value="$(link-orig)">
+        <input type="hidden" name="popup" value="false">
+        <input type="hidden" name="username" value="">
+        <input type="hidden" name="password" value="">
 
-  $(if error)<p class="err">$(error)</p>$(endif)
-  <p class="help">Achat : auprès des revendeurs de Zinbconnect.<br>
-  Un code = un appareil à la fois.</p>
-</main>
+        <label for="code">Votre code</label>
+        <input id="code" type="text" maxlength="20" autocomplete="off"
+               autocapitalize="characters" spellcheck="false" inputmode="text"
+               placeholder="EX : K7M2PQRS9TUV" required>
+        <button id="submitBtn" type="submit">Se connecter</button>
+        <button id="scanBtn" class="ghost" type="button">Se connecter avec le QR code</button>
+        <p class="hint">Le code figure sur votre carte. Il n'y a jamais de 0, O, 1, I ou l.</p>
+      </form>
+
+      <div id="camWrap">
+        <video id="cam" muted playsinline></video>
+        <div id="camHint">Placez le QR code de la carte dans le cadre</div>
+      </div>
+
+      $(if error)
+      <div id="message" class="msg ko show" role="status">
+        <b>Erreur de connexion</b>
+        $(error)
+      </div>
+      $(endif)
+      <div id="jsMsg" class="msg" role="status"></div>
+    </section>
+
+    <section class="card">
+      <h2>Forfaits</h2>
+      <div class="plan">
+        <div>
+          <strong>1 000 FC</strong>
+          <em>1 heure de connexion</em>
+        </div>
+        <span class="tag">Illimité</span>
+      </div>
+      <div class="plan">
+        <div>
+          <strong>1 500 FC</strong>
+          <em>12 heures de connexion</em>
+        </div>
+        <span class="tag">Illimité</span>
+      </div>
+      <div class="plan">
+        <div>
+          <strong>2 500 FC</strong>
+          <em>24 heures de connexion</em>
+        </div>
+        <span class="tag">Illimité</span>
+      </div>
+      <div class="plan">
+        <div>
+          <strong>5 000 FC</strong>
+          <em>3 jours de connexion</em>
+        </div>
+        <span class="tag">Illimité</span>
+      </div>
+    </section>
+
+    <details>
+      <summary>Aide et questions fréquentes</summary>
+      <ul>
+        <li><strong>Où acheter un code ?</strong> Chez un revendeur à Kitutu, en espèces (FC).</li>
+        <li><strong>Combien de temps ?</strong> Votre forfait est illimité pendant toute sa durée : pas de compteur de données.</li>
+        <li><strong>Le temps commence quand ?</strong> À la première utilisation du code, pas à l'achat.</li>
+        <li><strong>J'ai perdu ma connexion ?</strong> Réentrez le même code : il reprend le temps restant.</li>
+        <li><strong>Le code ne passe pas ?</strong> Vérifiez les caractères : il n'y a jamais de <b>0</b>, <b>O</b>, <b>1</b>, <b>I</b> ni <b>l</b>.</li>
+        <li><strong>Un code pour deux personnes ?</strong> Non : un code ne peut pas servir deux fois en même temps.</li>
+      </ul>
+    </details>
+
+    <p class="hint" style="text-align:center;margin-top:10px">Une connexion lente ? Cette page reste légère pour fonctionner partout.</p>
+  </main>
+
+  <footer>
+    Zinbconnect · <a href="http://10.100.0.1/dashboard.php">Espace revendeur</a>
+  </footer>
+</div>
 
 <script>
-/* Défi CHAP fourni par le routeur (login-by=http-chap). Le mot de passe
+/* Défi CHAP fourni par RouterOS (login-by=http-chap). Le mot de passe
    envoyé est MD5(chap-id + code + chap-challenge) : le code ne circule
    jamais en clair, même sur un Wi-Fi ouvert. */
 var CHAP_ID = '', CHAP_CHALLENGE = '';
@@ -66,27 +236,33 @@ CHAP_ID = '$(chap-id)';
 CHAP_CHALLENGE = '$(chap-challenge)';
 $(endif)
 
-/* Saisie assouplie : majuscules, espaces et tirets retirés. */
 function _clean(s) {
   return String(s || '').replace(/[\s\-_\.]/g, '').toUpperCase();
+}
+
+function showErr(title, txt) {
+  var b = document.getElementById('jsMsg');
+  b.className = 'msg ko show';
+  b.innerHTML = '<b>' + title + '</b>' + txt;
 }
 
 function go(ev) {
   if (ev && ev.preventDefault) { ev.preventDefault(); }
   var f = document.forms.login;
   var c = _clean(document.getElementById('code').value);
-  if (c.length < 8) {
-    alert('Code incomplet : vérifiez les 12 caractères de votre ticket.');
+  if (c.length < 6) {
+    showErr('Code incomplet', 'Vérifiez le code inscrit sur votre carte.');
     return false;
   }
+  document.getElementById('submitBtn').disabled = true;
+  document.getElementById('submitBtn').textContent = 'Connexion en cours…';
   f.elements.username.value = c;
   f.elements.password.value = CHAP_ID ? hex_md5(CHAP_ID + c + CHAP_CHALLENGE) : c;
-  f.submit();   /* méthode submit() : ne repasse pas par onsubmit */
+  f.submit();
   return false;
 }
 
-/* MD5 (RFC 1321) — implémentation locale, entrées ASCII.
-   Vérifiée sur les vecteurs officiels MD5("") et MD5("abc"). */
+/* Implémentation MD5 pure JavaScript autonome (RFC 1321) */
 function hex_md5(input) {
   var K = [
     0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
@@ -98,22 +274,28 @@ function hex_md5(input) {
     0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
     0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1, 0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391
   ];
-  var S = [7, 12, 17, 22, 5, 9, 14, 20, 4, 11, 16, 23, 6, 10, 15, 21];
-
+  var S = [
+    7, 12, 17, 22,  7, 12, 17, 22,  7, 12, 17, 22,  7, 12, 17, 22,
+    5,  9, 14, 20,  5,  9, 14, 20,  5,  9, 14, 20,  5,  9, 14, 20,
+    4, 11, 16, 23,  4, 11, 16, 23,  4, 11, 16, 23,  4, 11, 16, 23,
+    6, 10, 15, 21,  6, 10, 15, 21,  6, 10, 15, 21,  6, 10, 15, 21
+  ];
   var bytes = [];
-  for (var i = 0; i < input.length; i++) bytes.push(input.charCodeAt(i) & 0xff);
+  for (var i = 0; i < input.length; i++) {
+    var code = input.charCodeAt(i);
+    if (code < 128) { bytes.push(code); }
+    else if (code < 2048) { bytes.push(192 | (code >> 6), 128 | (code & 63)); }
+    else { bytes.push(224 | (code >> 12), 128 | ((code >> 6) & 63), 128 | (code & 63)); }
+  }
   var bitLen = bytes.length * 8;
   bytes.push(0x80);
-  while (bytes.length % 64 !== 56) bytes.push(0);
-  bytes.push(bitLen & 0xff, (bitLen >>> 8) & 0xff, (bitLen >>> 16) & 0xff, (bitLen >>> 24) & 0xff, 0, 0, 0, 0);
-
+  while ((bytes.length % 64) !== 56) { bytes.push(0); }
+  for (var i = 0; i < 8; i++) { bytes.push((bitLen >>> (i * 8)) & 0xff); }
   var a0 = 0x67452301, b0 = 0xefcdab89, c0 = 0x98badcfe, d0 = 0x10325476;
-
-  for (var off = 0; off < bytes.length; off += 64) {
+  for (var i = 0; i < bytes.length; i += 64) {
     var M = [];
     for (var j = 0; j < 16; j++) {
-      M[j] = bytes[off + j * 4] | (bytes[off + j * 4 + 1] << 8) |
-             (bytes[off + j * 4 + 2] << 16) | (bytes[off + j * 4 + 3] << 24);
+      M[j] = bytes[i + j * 4] | (bytes[i + j * 4 + 1] << 8) | (bytes[i + j * 4 + 2] << 16) | (bytes[i + j * 4 + 3] << 24);
     }
     var A = a0, B = b0, C = c0, D = d0;
     for (var k = 0; k < 64; k++) {
@@ -122,9 +304,7 @@ function hex_md5(input) {
       else if (k < 32) { F = (D & B) | (~D & C); g = (5 * k + 1) % 16; }
       else if (k < 48) { F = B ^ C ^ D; g = (3 * k + 5) % 16; }
       else { F = C ^ (B | ~D); g = (7 * k) % 16; }
-      var tmp = D;
-      D = C;
-      C = B;
+      var tmp = D; D = C; C = B;
       var x = (A + F + K[k] + M[g]) | 0;
       var s = S[k % 4 + 4 * Math.floor(k / 16)];
       B = (B + ((x << s) | (x >>> (32 - s)))) | 0;
@@ -132,7 +312,6 @@ function hex_md5(input) {
     }
     a0 = (a0 + A) | 0; b0 = (b0 + B) | 0; c0 = (c0 + C) | 0; d0 = (d0 + D) | 0;
   }
-
   function h(n) {
     var out = '';
     for (var i = 0; i < 4; i++) {
@@ -142,6 +321,63 @@ function hex_md5(input) {
     return out;
   }
   return h(a0) + h(b0) + h(c0) + h(d0);
+}
+
+// ---- Scanner QR code caméra ----
+var stream = null;
+function stopCamera() {
+  if (stream) { stream.getTracks().forEach(function (t) { t.stop(); }); stream = null; }
+  document.getElementById('camWrap').classList.remove('on');
+}
+document.getElementById('scanBtn').addEventListener('click', async function () {
+  if (!('BarcodeDetector' in window)) {
+    showErr('Scan indisponible', "Visez le QR de la carte avec l'appareil photo de votre smartphone pour remplir le code automatiquement.");
+    return;
+  }
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({video: {facingMode: 'environment'}});
+  } catch (err) {
+    showErr('Caméra inaccessible', "Autorisez l'accès à la caméra dans votre navigateur, ou saisissez le code.");
+    return;
+  }
+  var wrap = document.getElementById('camWrap');
+  var video = document.getElementById('cam');
+  wrap.classList.add('on');
+  video.srcObject = stream;
+  try { await video.play(); } catch (err) {}
+
+  var detector = new BarcodeDetector({formats: ['qr_code']});
+  var loop = async function () {
+    if (!stream) return;
+    try {
+      var found = await detector.detect(video);
+      if (found && found.length) {
+        var raw = found[0].rawValue || '';
+        var code = raw;
+        try {
+          var u = new URL(raw);
+          code = u.searchParams.get('c') || raw;
+        } catch (e) { code = raw; }
+        var clean = _clean(code);
+        if (clean.length >= 6) {
+          stopCamera();
+          document.getElementById('code').value = clean;
+          go();
+          return;
+        }
+      }
+    } catch (e) {}
+    setTimeout(loop, 250);
+  };
+  loop();
+});
+
+// Pré-remplissage via scan photo externe : ?c=CODE
+var params = new URLSearchParams(location.search);
+var pre = params.get('c');
+if (pre) {
+  document.getElementById('code').value = _clean(pre);
+  setTimeout(function () { go(); }, 200);
 }
 </script>
 </body>

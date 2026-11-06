@@ -104,3 +104,4 @@ Une fois l'antenne Starlink alignée et connectée au réseau satellitaire :
 1. **Protection contre la foudre et surtensions** : Le Sud-Kivu subit de fréquents orages. Installe un parafoudre / parasurtenseur secteur entre la prise murale et le bloc 24 V du MikroTik ainsi que sur l'alimentation Starlink.
 2. **Onduleur ou batterie régulée** : Un onduleur (UPS) de 600 à 1000 VA est indispensable pour maintenir le réseau actif pendant les coupures ou fluctuations du groupe électrogène / panneaux solaires.
 3. **Étanchéité EAP225** : Bien refermer le cache étanche inférieur en caoutchouc autour du câble réseau pour empêcher l'humidité et les insectes de pénétrer dans l'antenne.
+

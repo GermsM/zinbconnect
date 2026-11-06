@@ -3,31 +3,60 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Zinbconnect — connecté</title>
+<meta name="theme-color" content="#5b21b6">
+<title>Zinbconnect — Connexion réussie</title>
 <style>
-  /* Page autonome : aucun lien externe (aucun CDN). */
-  body { margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center;
-         font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-         background: #0e2a3a; color: #eef6fa; padding: 16px; }
-  main { width: 100%; max-width: 380px; background: #123247; border-radius: 14px; padding: 28px 24px;
-         box-shadow: 0 12px 40px rgba(0,0,0,.35); text-align: center; }
-  h1 { margin: 0 0 6px; font-size: 22px; }
-  .ok { margin: 0 0 16px; font-size: 15px; color: #8fd4ae; }
-  a.status { display: inline-block; padding: 10px 18px; border-radius: 10px; background: #2b5672;
-             color: #fff; text-decoration: none; font-size: 14px; }
-  p.small { margin: 14px 0 0; font-size: 12px; color: #7da7bb; }
+:root {
+  --v: #5b21b6;
+  --v2: #7c3aed;
+  --v3: #a78bfa;
+  --bg1: #f5f3ff;
+  --bg2: #ede9fe;
+  --card: #fff;
+  --txt: #1f2937;
+  --muted: #6b7280;
+  --ok: #15803d;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif;
+  color: var(--txt); line-height: 1.45; font-size: 17px;
+  background: linear-gradient(160deg, var(--bg1) 0%, #fff 45%, var(--bg2) 100%);
+  background-attachment: fixed; min-height: 100vh;
+}
+.wrap { max-width: 520px; margin: 0 auto; padding: 24px 14px 36px; text-align: center; }
+.logo {
+  width: 54px; height: 54px; border-radius: 16px; margin: 0 auto 16px;
+  background: linear-gradient(135deg, var(--v), var(--v3));
+  color: #fff; display: flex; align-items: center; justify-content: center;
+  font-weight: 700; font-size: 24px; box-shadow: 0 6px 16px rgba(91,33,182,.28);
+}
+.card {
+  background: var(--card); border-radius: 16px; padding: 24px 20px;
+  box-shadow: 0 2px 10px rgba(76,29,149,.07); border: 1px solid rgba(237,233,254,.9);
+}
+h1 { font-size: 22px; margin: 0 0 8px; color: var(--ok); }
+p { font-size: 15px; color: #4b5563; margin: 0 0 18px; line-height: 1.5; }
+.btn {
+  display: block; padding: 14px; background: linear-gradient(135deg, var(--v), var(--v2));
+  color: #fff; text-decoration: none; font-weight: 700; border-radius: 12px;
+  box-shadow: 0 6px 16px rgba(91,33,182,.25);
+}
+.small { font-size: 13px; color: var(--muted); margin-top: 14px; }
 </style>
 </head>
 <body>
-<main>
-  <h1>Zinbconnect</h1>
-  <p class="ok">Accès accordé — bonne navigation !</p>
-  <p><a class="status" href="$(link-status)">Voir mon temps restant</a></p>
-  <p class="small">La page demandée s'ouvre tout seul dans quelques secondes…</p>
-</main>
+<div class="wrap">
+  <div class="logo">Z</div>
+  <div class="card">
+    <h1>Connexion réussie !</h1>
+    <p>Votre ticket a été validé. Vous pouvez désormais naviguer librement sur Internet.</p>
+    <a class="btn" href="$(link-status)">Voir ma session & mon temps restant</a>
+    <p class="small">Redirection automatique en cours…</p>
+  </div>
+</div>
 <script>
-/* Redirection vers la page demandée à l'origine ($(link-redirect)),
-   après un court délai pour laisser lire la confirmation. */
 setTimeout(function () {
   window.location.href = "$(link-redirect)";
 }, 2000);
