@@ -337,3 +337,4 @@ if ($failedTests > 0) {
     echo "FÉLICITATIONS : Tous les tests sont au vert !\n";
     exit(0);
 }
+

@@ -188,3 +188,4 @@ Ce guide détaille l'ensemble des procédures de tests manuels à exécuter avan
 - [ ] WireGuard joignable depuis l'extérieur sur `10.99.0.2`.
 - [ ] Sauvegarde locale effectuée (`/system backup save name=kitutu-init`).
 - [ ] Lot de 30 tickets TEST imprimé et découpé pour les notables et testeurs de Kitutu.
+
