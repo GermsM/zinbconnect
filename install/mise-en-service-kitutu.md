@@ -7,6 +7,10 @@ garde que le déroulé et les points de rupture.
 > Règle d'or : le mot de passe administrateur et le tunnel se règlent **avant**
 > que le routeur ne voie Internet, et on ne quitte le site qu'après une
 > sauvegarde et un test réel avec un code.
+>
+> Une grande partie de ce document se déroule **à Bukavu, avant le départ**
+> (VPS, tunnel, portail, codes) : voir `install/azure-vps-et-test-local.md`.
+> Sur site, il ne reste que le matériel et Starlink.
 
 ---
 
