@@ -39,7 +39,8 @@
 # RouterOS 7 : le client NTP se configure uniquement par la liste "servers"
 # (primary-ntp / secondary-ntp ont disparu depuis la v7).
 /system ntp client set enabled=yes servers=216.239.35.0,216.239.35.4
-/system notes set show-at-login=yes note="Zinbconnect Kitutu - config voir install/rb2011-base.rsc"
+# Note d'accueil sur la console (optionnel, securise par do/on-error)
+:do { /system note set show-at-login=yes note="Zinbconnect Kitutu - config voir install/rb2011-base.rsc" } on-error={ }
 
 # Desactiver IPv6 (empeche tout contournement du portail captif via IPv6 de Starlink)
 :do { /ipv6 settings set disable-ipv6=yes } on-error={ }
@@ -165,12 +166,24 @@
 # service : NI le Wi-Fi clients, NI le LAN filaire clients (10.20.30.0/24).
 # Pour autoriser aussi le LAN clients (confort sur site, MAIS tout client du
 # hotspot peut alors atteindre WinBox), ajouter ",10.20.30.0/24" ci-dessous.
-:do { /ip service set winbox address=10.100.0.0/24,10.20.50.0/24 } on-error={ }
-:do { /ip service set ssh    address=10.100.0.0/24,10.20.50.0/24 } on-error={ }
-:do { /ip service set www    address=10.100.0.0/24,10.20.50.0/24 } on-error={ }
-:do { /ip service set telnet disabled=yes } on-error={ }
-:do { /ip service set ftp    disabled=yes } on-error={ }
-:do { /ip service set api    disabled=yes } on-error={ }
+:do {
+  /ip service set [find name=winbox] available-from=10.100.0.0/24,10.20.50.0/24
+} on-error={
+  /ip service set [find name=winbox] address=10.100.0.0/24,10.20.50.0/24
+}
+:do {
+  /ip service set [find name=ssh] available-from=10.100.0.0/24,10.20.50.0/24
+} on-error={
+  /ip service set [find name=ssh] address=10.100.0.0/24,10.20.50.0/24
+}
+:do {
+  /ip service set [find name=www] available-from=10.100.0.0/24,10.20.50.0/24
+} on-error={
+  /ip service set [find name=www] address=10.100.0.0/24,10.20.50.0/24
+}
+:do { /ip service set [find name=telnet] disabled=yes } on-error={ }
+:do { /ip service set [find name=ftp]    disabled=yes } on-error={ }
+:do { /ip service set [find name=api]    disabled=yes } on-error={ }
 # api-ssl / www-ssl sont desactives par defaut : rien a faire.
 #
 # Acces de secours : si le tunnel tombe ET que le mot de passe admin est
