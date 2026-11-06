@@ -294,3 +294,29 @@ function logout_current(): void
     session_start();
     $_SESSION['__created'] = true;
 }
+
+/**
+ * Purge les anciens journaux d'audit et verrous de débit expirés.
+ * Rétention par défaut : 30 jours (minimisation des données personnelles IP/horodatage).
+ */
+function prune_old_logs(int $retentionDays = 30): int
+{
+    try {
+        $db = db();
+        $cutoff = date('Y-m-d H:i:s', time() - ($retentionDays * 86400));
+        $stmt = $db->prepare('DELETE FROM audit_log WHERE created_at < ?');
+        $stmt->execute([$cutoff]);
+        $deleted = $stmt->rowCount();
+
+        // Nettoie aussi les verrous de débit expirés depuis plus de 24 heures
+        $cutoffRate = time() - 86400;
+        $db->prepare('DELETE FROM rate_limits WHERE first_hit < ?')->execute([$cutoffRate]);
+
+        if ($deleted > 0) {
+            audit('logs_pruned', null, "Purge automatique de $deleted journaux anterieurs a $cutoff");
+        }
+        return $deleted;
+    } catch (Throwable $e) {
+        return 0;
+    }
+}

@@ -81,10 +81,11 @@ function format_bytes(?int $bytes, int $decimals = 1): string
     return number_format($v, $dec, ',', ' ') . ' ' . $units[$i];
 }
 
-/** 2500 -> "2 500 FC". */
-function format_money(float $amount): string
+/** 2500 -> "2 500 FC" (toujours un entier en Francs Congolais). */
+function format_money(int|float $amount): string
 {
-    return number_format($amount, 0, ',', ' ') . ' ' . (setting('currency') ?? 'FC');
+    $intAmount = (int)round((float)$amount);
+    return number_format($intAmount, 0, ',', ' ') . ' ' . (setting('currency') ?? 'FC');
 }
 
 /**

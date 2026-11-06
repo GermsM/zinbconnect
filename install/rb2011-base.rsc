@@ -33,13 +33,21 @@
 #   - Ce script ne touche PAS au hotspot : voir rb2011-hotspot.rsc.
 # =====================================================================
 
-# ---------- 1. Identite, horloge, notes ----------
+# ---------- 1. Identite, horloge, notes, IPv6 et usure Flash ----------
 /system identity set name=zinbconnect-kitutu
 /system clock set time-zone-autodetect=no time-zone-name=Africa/Kigali
 # RouterOS 7 : le client NTP se configure uniquement par la liste "servers"
 # (primary-ntp / secondary-ntp ont disparu depuis la v7).
 /system ntp client set enabled=yes servers=216.239.35.0,216.239.35.4
 /system notes set show-at-login=yes note="Zinbconnect Kitutu - config voir install/rb2011-base.rsc"
+
+# Desactiver IPv6 (empeche tout contournement du portail captif via IPv6 de Starlink)
+:do { /ipv6 settings set disable-ipv6=yes } on-error={ }
+
+# Journaux en memoire uniquement (limite l'usure de la memoire flash NAND du RB2011)
+/system logging action set memory memory-lines=1000
+:do { /system logging set [find default=yes] action=memory } on-error={ }
+:do { /system logging set [find action=disk] action=memory } on-error={ }
 
 # ---------- 2. Ports Ethernet ----------
 # WAN Starlink = ETH1 (client DHCP, le routeur Starlink fait la translation)
@@ -95,6 +103,9 @@
 /ip dhcp-client add interface=eth-wan disabled=no comment="Adresse WAN via Starlink"
 # Couvre aussi bien les clients (10.20.30.0/24) que le port admin (10.20.50.0/24).
 /ip firewall nat add chain=srcnat out-interface=eth-wan action=masquerade comment="NAT vers Starlink"
+# Forcer les requetes DNS des clients vers le DNS local (empeche le contournement par DNS externe)
+/ip firewall nat add chain=dstnat in-interface=lan protocol=udp dst-port=53 action=redirect to-ports=53 comment="Forcer DNS local UDP"
+/ip firewall nat add chain=dstnat in-interface=lan protocol=tcp dst-port=53 action=redirect to-ports=53 comment="Forcer DNS local TCP"
 
 # ---------- 7. Acces distant : tunnel WireGuard vers un VPS relais ----------
 # Starlink place le routeur derriere un CGNAT : aucune redirection de port
@@ -193,5 +204,11 @@ add chain=input action=accept in-interface=lan comment="LAN clients (DHCP, DNS, 
 add chain=input action=drop in-interface=eth-wan comment="Rien d'autre depuis Starlink (CGNAT)"
 add chain=forward action=accept connection-state=established,related comment="Trafic clients etabli"
 add chain=forward action=drop connection-state=invalid comment="Trafic client invalide"
+
+# ---------- 8 bis. Anti-tethering (empeche le partage Wi-Fi par smartphone) ----------
+# Force le TTL a 1 vers le LAN clients : le telephone du client recoit la connexion,
+# mais s'il tente de partager en Wi-Fi / point d'acces, le TTL tombe a 0 et le paquet est jete.
+/ip firewall mangle
+add chain=postrouting action=change-ttl new-ttl=set:1 out-interface=lan passthrough=no comment="Anti-tethering: empeche le partage hotspot par telephone"
 
 :log info "rb2011-base.rsc : configuration de base appliquee - WAN eth-wan (DHCP), LAN clients 10.20.30.1/24, port admin 10.20.50.1/24 (ETH5), PoE-Out eth10 actif, tunnel wg-relay 10.20.40.2"

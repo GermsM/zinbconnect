@@ -181,7 +181,14 @@ fonctionne.
 /ip firewall nat print stats
 ```
 
-doit contenir uniquement le `masquerade` sortant vers `eth-wan`.
+- règle `srcnat` : `action=masquerade` sortant vers `eth-wan` ;
+- règles `dstnat` : redirection des requêtes DNS (UDP/TCP port 53) vers le DNS local (empêche le contournement par DNS externe).
+
+```
+/ip firewall mangle print
+```
+
+- règle `postrouting` vers `lan` : `action=change-ttl new-ttl=set:1` (anti-tethering : empêche le partage de connexion Wi-Fi par smartphone).
 
 > Vérifier aussi que `/ip service print` n'affiche **pas** `api` activé : le
 > bouton « Import MikroTik » de l'admin produit un fichier `.rsc`, il n'utilise
@@ -216,10 +223,12 @@ Doit afficher `comment: <référence du lot>` (le code vient bien de l'import
 attendu) et `limit-uptime` / `limit-bytes-total` cohérents avec le forfait
 vendu (ex. `1h`, `104857600`).
 
-Le commentaire doit ressembler à `exp=0000000000 w=00086400 <lot>` :
+Le commentaire doit ressembler à `exp=0000000000 w=00086400 u=1780000000 <lot>` :
 `exp` à zéro = code jamais utilisé encore, `w` = fenêtre de validité en
-secondes (86400 = 24 h). Après la première connexion du client, `exp` est
-remplacé par la date (epoch) et le code disparaît une fois `exp + w` dépassé.
+secondes (86400 = 24 h), `u` = date limite d'expiration si le code n'est jamais utilisé
+(90 jours par défaut). Après la première connexion du client, `exp` est
+remplacé par la date réelle (epoch) et le code disparaît une fois `exp + w` dépassé.
+Si le code n'est jamais utilisé, il disparaît dès que la date `u` est atteinte.
 
 Vérifier que le mécanisme tourne :
 

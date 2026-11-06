@@ -130,19 +130,25 @@ function routeros_hotspot_import(array $rows, string $batchRef): ?string
  * Commentaire d'un utilisateur hotspot. Format lu par le planificateur
  * « code-validite » du routeur (install/rb2011-hotspot.rsc) :
  *
- *     exp=0000000000 w=00086400 <lot>
+ *     exp=0000000000 w=00086400 u=0000000000 <lot>
  *
  * exp (10 chiffres) : date de première connexion en epoch, 0 = pas encore
  *                     utilisé — le routeur la remplit lui-même ;
- * w   (8 chiffres)  : fenêtre de validité en secondes.
+ * w   (8 chiffres)  : fenêtre de validité en secondes après première connexion ;
+ * u   (10 chiffres) : date limite d'expiration si le code n'est JAMAIS utilisé
+ *                     (par défaut : 90 jours après génération).
  *
- * Les positions sont FIXES (date aux caractères 4-14, durée aux 17-25).
+ * Les positions sont FIXES :
+ *   - exp : caractères 4-14
+ *   - w   : caractères 17-25
+ *   - u   : caractères 28-38
  * Changer ce format sans changer le script du routeur casse l'expiration.
  */
-function routeros_user_comment(string $batchRef, int $window): string
+function routeros_user_comment(string $batchRef, int $window, int $maxUnusedDays = 90): string
 {
     $window = max(60, min(99999999, $window));
-    return sprintf('exp=%010d w=%08d %s', 0, $window, $batchRef);
+    $unusedEpoch = time() + ($maxUnusedDays * 86400);
+    return sprintf('exp=%010d w=%08d u=%010d %s', 0, $window, $unusedEpoch, $batchRef);
 }
 
 /** Nom de fichier conseillé pour l'import de ce lot (router Files). */

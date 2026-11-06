@@ -107,20 +107,28 @@ function ticket_remaining_seconds(array $t, ?int $now = null): int
  * Génère un lot de $quantity tickets pour un forfait.
  * Retourne les codes EN CLAIR (une seule fois) pour l'impression/CSV.
  */
-function generate_batch(int $subscriptionId, int $quantity, ?float $unitPrice, ?string $actor, ?string $note = null): array
+function generate_batch(int $subscriptionId, int $quantity, ?float $unitPrice, ?string $actor, ?string $note = null, bool $isTest = false): array
 {
     $plan = plan_by_id($subscriptionId);
     if (!$plan) {
         return ['ok' => false, 'error' => 'invalidSubscription'];
     }
     $quantity = max(1, min(1000, $quantity));
-    $unitPrice = $unitPrice ?? (float)$plan['rate'];
-    if ($unitPrice < 0) {
+
+    if ($isTest) {
         $unitPrice = 0.0;
+        $note = trim('[ESSAI GRATUIT] ' . ($note ?? ''));
+        $prefix = 'TEST-';
+    } else {
+        $unitPrice = $unitPrice !== null ? (float)(int)round($unitPrice) : (float)(int)$plan['rate'];
+        if ($unitPrice < 0) {
+            $unitPrice = 0.0;
+        }
+        $prefix = 'LOT-';
     }
 
     $db = db();
-    $reference = 'LOT-' . date('Ymd') . '-' . strtoupper(bin2hex(random_bytes(2)));
+    $reference = $prefix . date('Ymd') . '-' . strtoupper(bin2hex(random_bytes(2)));
     $limit = plan_data_limit($plan);
 
     try {
@@ -263,21 +271,24 @@ function activate_ticket(string $codeRaw, ?string $contact = null, ?int $reselle
             return ['ok' => false, 'error' => 'alreadyUsed'];
         }
 
-        // Vente : une ligne dans transactions, sauf si le revendeur a déjà
-        // encaissé cette carte (status « sold »).
+        // Vente : une ligne dans transactions UNIQUEMENT si le ticket est payant (> 0 FC)
+        // et qu'il n'a pas déjà été encaissé par un revendeur.
+        // Les tickets de TEST (0 FC) ne comptent JAMAIS comme vente.
         $alreadySold = ($ticket['status'] ?? '') === 'sold';
-        if (!$alreadySold) {
-            $commission = 0.0;
+        $isPaying    = ((float)($ticket['price'] ?? 0)) > 0.0;
+        if (!$alreadySold && $isPaying) {
+            $ticketPriceInt = (int)round((float)$ticket['price']);
+            $commission = 0;
             if ($resellerId !== null) {
                 $pct = (float)(setting('reseller_commission') ?? '25');
-                $commission = round(((float)$ticket['price']) * $pct / 100, 2);
+                $commission = (int)round($ticketPriceInt * $pct / 100);
             }
             $db->prepare(
                 'INSERT INTO transactions (reseller_id, subscription_id, buyer_contact, access_code, amount, commission, created_at)
                  VALUES (?,?,?,?,?,?,?)'
             )->execute([
                 $resellerId, $ticket['subscription_id'], $contact,
-                normalize_code($codeRaw), (float)$ticket['price'], $commission, date('Y-m-d H:i:s', $now),
+                normalize_code($codeRaw), $ticketPriceInt, $commission, date('Y-m-d H:i:s', $now),
             ]);
         }
 
@@ -365,15 +376,19 @@ function sell_ticket(string $codeRaw, ?string $contact, int $resellerId): array
             return ['ok' => false, 'error' => 'alreadyUsed'];
         }
 
-        $pct = (float)(setting('reseller_commission') ?? '25');
-        $commission = round(((float)$ticket['price']) * $pct / 100, 2);
-        $db->prepare(
-            'INSERT INTO transactions (reseller_id, subscription_id, buyer_contact, access_code, amount, commission, created_at)
-             VALUES (?,?,?,?,?,?,?)'
-        )->execute([
-            $resellerId, $ticket['subscription_id'], $contact,
-            normalize_code($codeRaw), (float)$ticket['price'], $commission, date('Y-m-d H:i:s'),
-        ]);
+        $ticketPriceInt = (int)round((float)$ticket['price']);
+        $commission = 0;
+        if ($ticketPriceInt > 0) {
+            $pct = (float)(setting('reseller_commission') ?? '25');
+            $commission = (int)round($ticketPriceInt * $pct / 100);
+            $db->prepare(
+                'INSERT INTO transactions (reseller_id, subscription_id, buyer_contact, access_code, amount, commission, created_at)
+                 VALUES (?,?,?,?,?,?,?)'
+            )->execute([
+                $resellerId, $ticket['subscription_id'], $contact,
+                normalize_code($codeRaw), $ticketPriceInt, $commission, date('Y-m-d H:i:s'),
+            ]);
+        }
         $db->commit();
     } catch (Throwable $e) {
         if ($db->inTransaction()) {
@@ -541,17 +556,17 @@ function sales_stats(): array
     ];
 
     $out = [];
-    $stmt = $db->prepare('SELECT COALESCE(SUM(amount),0) total, COUNT(*) nb FROM transactions WHERE created_at >= ?');
+    $stmt = $db->prepare('SELECT COALESCE(SUM(amount),0) total, COUNT(*) nb FROM transactions WHERE created_at >= ? AND amount > 0');
     foreach ($ranges as $key => $since) {
         $stmt->execute([$since]);
         $row = $stmt->fetch();
-        $out[$key] = ['total' => (float)$row['total'], 'count' => (int)$row['nb']];
+        $out[$key] = ['total' => (int)round((float)$row['total']), 'count' => (int)$row['nb']];
     }
 
     $byPlan = $db->query(
         "SELECT s.id, s.name, s.duration_minutes, s.duration_days, COUNT(*) nb, COALESCE(SUM(tr.amount),0) total
          FROM transactions tr JOIN subscriptions s ON s.id = tr.subscription_id
-         WHERE tr.created_at >= '" . $ranges['month'] . "'
+         WHERE tr.created_at >= '" . $ranges['month'] . "' AND tr.amount > 0
          GROUP BY s.id, s.name, s.duration_minutes, s.duration_days ORDER BY total DESC"
     )->fetchAll();
     foreach ($byPlan as &$p) {
@@ -610,4 +625,207 @@ function stock_by_plan(): array
         $r['label'] = plan_label($r);
     }
     return $rows;
+}
+
+/** Convertit une durée RouterOS ("2h15m", "01:42:15", "45s") en secondes entières. */
+function routeros_parse_duration(string $s): int
+{
+    $s = trim($s);
+    if ($s === '' || $s === '0' || $s === '0s') {
+        return 0;
+    }
+    if (preg_match('/^(?:(\d+):)?(\d{1,2}):(\d{2})$/', $s, $m)) {
+        $hours = isset($m[1]) && $m[1] !== '' ? (int)$m[1] : 0;
+        return $hours * 3600 + ((int)$m[2]) * 60 + ((int)$m[3]);
+    }
+    $sec = 0;
+    if (preg_match_all('/(\d+)([wdhms])/i', $s, $matches, PREG_SET_ORDER)) {
+        foreach ($matches as $match) {
+            $val = (int)$match[1];
+            $unit = strtolower($match[2]);
+            $sec += match ($unit) {
+                'w' => $val * 604800,
+                'd' => $val * 86400,
+                'h' => $val * 3600,
+                'm' => $val * 60,
+                's' => $val,
+                default => 0,
+            };
+        }
+        return $sec;
+    }
+    return (int)$s;
+}
+
+/**
+ * Importe le fichier d'usage généré par le routeur (export-usage.rsc -> zinb_usage.csv).
+ * Met à jour la consommation réelle (octets, uptime) de chaque ticket, actualise
+ * les statuts (marquage 'used' si quota atteint) et calcule la consommation moyenne par forfait.
+ */
+function import_usage_csv(string $csvContent, ?string $actor = null): array
+{
+    $lines = preg_split('/\r\n|\r|\n/', trim($csvContent));
+    if (!$lines || count($lines) === 0) {
+        return ['ok' => false, 'error' => 'emptyFile'];
+    }
+
+    $wanRx = 0;
+    $wanTx = 0;
+    $updated = 0;
+    $matched = 0;
+    $byPlan = [];
+
+    $db = db();
+    $now = date('Y-m-d H:i:s');
+
+    $findTicket = $db->prepare('SELECT t.*, s.duration_minutes, s.duration_days, s.name as plan_name FROM tickets t LEFT JOIN subscriptions s ON s.id = t.subscription_id WHERE t.code_hash = ? LIMIT 1');
+    $updTicket = $db->prepare('UPDATE tickets SET bytes_used = ?, status = CASE WHEN ? THEN ? ELSE status END, last_sync_at = ? WHERE id = ?');
+
+    foreach ($lines as $line) {
+        $line = trim($line);
+        if ($line === '') {
+            continue;
+        }
+        if (str_starts_with($line, '#WAN_RX=')) {
+            if (preg_match('/#WAN_RX=(\d+),WAN_TX=(\d+)/', $line, $m)) {
+                $wanRx = (int)$m[1];
+                $wanTx = (int)$m[2];
+                try {
+                    $day = date('Y-m-d');
+                    $db->prepare('INSERT INTO usage_samples (sample_date, bytes_down, bytes_up, source, created_at)
+                                  VALUES (?,?,?,?,?)
+                                  ON CONFLICT(sample_date, source) DO UPDATE SET bytes_down = excluded.bytes_down, bytes_up = excluded.bytes_up')
+                       ->execute([$day, $wanRx, $wanTx, 'router_wan', $now]);
+                } catch (Throwable $e) {}
+            }
+            continue;
+        }
+        if (str_starts_with($line, 'code,') || str_starts_with($line, '#')) {
+            continue;
+        }
+
+        $cols = str_getcsv($line);
+        if (count($cols) < 5) {
+            continue;
+        }
+
+        $codeRaw = normalize_code($cols[0]);
+        if ($codeRaw === '') {
+            continue;
+        }
+
+        $uptimeStr = trim($cols[1]);
+        $bytesIn = (int)trim($cols[2]);
+        $bytesOut = (int)trim($cols[3]);
+        $bytesTotal = (int)trim($cols[4]);
+        if ($bytesTotal === 0 && ($bytesIn > 0 || $bytesOut > 0)) {
+            $bytesTotal = $bytesIn + $bytesOut;
+        }
+        $uptimeSec = routeros_parse_duration($uptimeStr);
+
+        $hash = code_hash($codeRaw);
+        $findTicket->execute([$hash]);
+        $ticket = $findTicket->fetch();
+        if (!$ticket) {
+            continue;
+        }
+
+        $matched++;
+        $newBytes = max((int)$ticket['bytes_used'], $bytesTotal);
+        $planId = (int)$ticket['subscription_id'];
+
+        if (!isset($byPlan[$planId])) {
+            $byPlan[$planId] = [
+                'name' => $ticket['plan_name'] ?? ('Forfait #' . $planId),
+                'count' => 0,
+                'total_bytes' => 0,
+                'total_uptime' => 0,
+            ];
+        }
+        $byPlan[$planId]['count']++;
+        $byPlan[$planId]['total_bytes'] += $newBytes;
+        $byPlan[$planId]['total_uptime'] += $uptimeSec;
+
+        $newStatus = $ticket['status'];
+        $statusChanged = false;
+        $limit = $ticket['data_limit_bytes'] !== null && $ticket['data_limit_bytes'] !== '' ? (int)$ticket['data_limit_bytes'] : null;
+
+        if ($limit !== null && $newBytes >= $limit) {
+            $newStatus = 'used';
+            $statusChanged = true;
+        } elseif ($uptimeSec > 0 && ($ticket['status'] === 'available' || $ticket['status'] === 'sold')) {
+            $newStatus = 'active';
+            $statusChanged = true;
+        }
+
+        $updTicket->execute([$newBytes, $statusChanged ? 1 : 0, $newStatus, $now, $ticket['id']]);
+        $updated++;
+    }
+
+    $stats = [];
+    foreach ($byPlan as $pid => $data) {
+        $c = max(1, $data['count']);
+        $stats[] = [
+            'plan_id' => $pid,
+            'name' => $data['name'],
+            'tickets_count' => $data['count'],
+            'avg_bytes' => (int)round($data['total_bytes'] / $c),
+            'avg_bytes_fmt' => format_bytes((int)round($data['total_bytes'] / $c)),
+            'avg_uptime_sec' => (int)round($data['total_uptime'] / $c),
+            'avg_uptime_fmt' => routeros_duration((int)round($data['total_uptime'] / $c)),
+        ];
+    }
+
+    audit('usage_imported', $actor, "Import de $updated tickets traites depuis export routeur");
+
+    return [
+        'ok' => true,
+        'matched' => $matched,
+        'updated' => $updated,
+        'wan_rx' => $wanRx,
+        'wan_tx' => $wanTx,
+        'wan_total' => $wanRx + $wanTx,
+        'wan_total_fmt' => format_bytes($wanRx + $wanTx),
+        'stats' => $stats,
+    ];
+}
+
+/**
+ * Génère le script .rsc pour supprimer du routeur tous les codes déjà consommés ou expirés.
+ * Parade en cas de réinitialisation ou restauration du routeur avec une ancienne sauvegarde.
+ */
+function export_consumed_routeros_rsc(): string
+{
+    require_once __DIR__ . '/routeros.php';
+    $stmt = db()->query("SELECT t.id, t.code_enc, t.status FROM tickets t WHERE t.status IN ('used', 'expired', 'revoked') ORDER BY t.id ASC");
+    $rows = $stmt->fetchAll();
+
+    $lines = [
+        '# ============================================================',
+        '# Zinbconnect — revocation des codes consommes, expires ou revoques',
+        '# Genere le ' . date('d/m/Y H:i') . ' par la console admin.',
+        '#',
+        '# Utilisation :',
+        '#   Apres un reset du RB2011 ou la restauration d\'une ancienne',
+        '#   sauvegarde, importez ce script pour supprimer du hotspot tous',
+        '#   les codes qui ont deja ete consommes selon la base de donnees.',
+        '# ============================================================',
+        '',
+    ];
+
+    $count = 0;
+    foreach ($rows as $r) {
+        $code = code_decrypt($r['code_enc'] ?? null);
+        if ($code === null || $code === '') {
+            continue;
+        }
+        $lines[] = '/ip hotspot user remove ' . routeros_code_find($code);
+        $count++;
+    }
+
+    $lines[] = '';
+    $lines[] = ':log info "Zinbconnect : ' . $count . ' codes consommes ou expires purges du hotspot"';
+    $lines[] = '';
+
+    return implode("\n", $lines);
 }

@@ -76,28 +76,37 @@
   /ip hotspot user profile set [find name=code-usable] shared-users=1
 }
 
-# ---------- 5. Validite des tickets (fenetre des la 1re connexion) ----------
+# ---------- 5. Validite des tickets (fenetre des la 1re connexion + expiration des codes inutilises) ----------
 # Probleme resolu ici : limit-uptime compte le temps CONNECTE cumule. Un
 # ticket "24h" utilise 10 minutes par jour resterait valable des semaines.
 # RouterOS n'a aucun champ "expire le ...", on le fabrique :
 #
 #   - l'application ecrit dans le commentaire de chaque code :
-#         exp=0000000000 w=00086400 <lot>
-#     (exp = date de 1re connexion, 0 = pas encore commence ; w = duree
-#      de validite en secondes, sur 8 chiffres ; puis la reference du lot)
+#         exp=0000000000 w=00086400 u=0000000000 <lot>
+#     (exp = date de 1re connexion en epoch, 0 = pas encore commence ;
+#      w   = duree de validite en secondes apres 1re connexion ;
+#      u   = date limite d'expiration si JAMAIS utilise, 0 ou epoch)
 #   - toutes les 2 minutes, ce planificateur :
-#       1. horodate les codes qui viennent de servir (bytes-in > 0) ;
-#       2. supprime ceux dont exp + w est depasse.
+#       1. horodate les codes qui viennent de servir (bytes-in > 0) avec l'epoch
+#          actuelle calculee par [:tonsec [:timestamp]] / 1000000000 ;
+#       2. supprime ceux dont exp + w est depasse ;
+#       3. supprime les codes jamais utilises depassant u (expiration du stock).
 #
-# Le code ne peut donc plus etre utilise apres la fenetre, meme s'il lui
-# restait du temps : c'est voulu ("24h apres la premiere utilisation").
-# Si la synchro NTP n'a pas encore eu lieu, l'horodatage est repousse au
-# prochain passage (aucune date fausse enregistree).
+# Garde-fou horloge : si la synchro NTP n'a pas encore eu lieu au boot du RB2011
+# ($now < 1700000000), le script ne fait RIEN. Aucune fausse expiration.
 #
-# Format et longueurs : exp= + 10 chiffres + " w=" + 8 chiffres + " " + lot
-#   positions 0-3 "exp=", 4-13 date, 14 espace, 15-16 "w=", 17-24 duree.
+# Format et longueurs : exp= + 10 chiffres + " w=" + 8 chiffres + " u=" + 10 chiffres + " " + lot
+#   positions 0-3 "exp=", 4-13 date, 14-16 " w=", 17-24 fenetre, 25-27 " u=", 28-37 fin de stock.
 /system scheduler remove [find name=code-validite]
-/system scheduler add name=code-validite interval=2m policy=read,write on-event=":foreach u in=[/ip hotspot user find where comment~\"exp=\"] do={ :local c [/ip hotspot user get \$u comment]; :local e [:tonum [:pick \$c 4 14]]; :if (\$e = 0) do={ :if ([/ip hotspot user get \$u bytes-in] > 0) do={ :local n [:timestamp]; :if (\$n > 1600000000) do={ /ip hotspot user set \$u comment=(\"exp=\" . \$n . [:pick \$c 14 [:len \$c]]) } } } else={ :local w [:tonum [:pick \$c 17 25]]; :if ([:timestamp] > (\$e + \$w)) do={ /ip hotspot user remove \$u } } }"
+/system scheduler add name=code-validite interval=2m policy=read,write on-event=":local now ([:tonsec [:timestamp]] / 1000000000); :if (\$now > 1700000000) do={ :foreach u in=[/ip hotspot user find where comment~\"exp=\"] do={ :local c [/ip hotspot user get \$u comment]; :local e [:tonum [:pick \$c 4 14]]; :if (\$e = 0) do={ :if ([/ip hotspot user get \$u bytes-in] > 0) do={ /ip hotspot user set \$u comment=(\"exp=\" . \$now . [:pick \$c 14 [:len \$c]]) } else={ :if ([:pick \$c 26 28] = \"u=\") do={ :local uexp [:tonum [:pick \$c 28 38]]; :if (\$uexp > 1700000000 and \$now > \$uexp) do={ /ip hotspot user remove \$u } } } } else={ :local w [:tonum [:pick \$c 17 25]]; :if (\$now > (\$e + \$w)) do={ /ip hotspot user remove \$u } } } }"
+
+# ---------- 5 bis. Protection anti-brute-force sur le portail ----------
+# Limite les rafales de requetes vers le serveur web du hotspot (max 15/min par client)
+# pour empecher un assaillant de deviner les codes par force brute.
+:if ([:len [/ip firewall filter find comment=\"Anti-brute-force portail : rythme normal\"]] = 0) do={
+  /ip firewall filter add chain=input in-interface=lan protocol=tcp dst-port=80 connection-state=new dst-limit=15/1m,5,src-address/1m action=accept comment=\"Anti-brute-force portail : rythme normal\" place-before=[find chain=input in-interface=lan]
+  /ip firewall filter add chain=input in-interface=lan protocol=tcp dst-port=80 connection-state=new action=drop comment=\"Anti-brute-force portail : blocage rafales\" place-before=[find chain=input in-interface=lan]
+}
 
 # ---------- 6. Verification ----------
 # Deux conditions simples plutot qu'un "find where a=1 and b=2" : rien a

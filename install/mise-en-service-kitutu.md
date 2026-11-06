@@ -20,6 +20,7 @@ garde que le déroulé et les points de rupture.
 |---|---|
 | `install/rb2011-base.rsc` avec `IP_DU_VPS` et `CLE_PUBLIQUE_DU_VPS` renseignés | sans ces deux valeurs le tunnel ne se crée pas (le script continue, mais sans accès distant) |
 | `install/rb2011-hotspot.rsc` | portail captif sur le bridge `lan` |
+| `install/export-usage.rsc` | export de l'usage des tickets et du volume Starlink WAN vers `zinb_usage.csv` |
 | Dossier `install/routeros-hotspot/zinbconnect/` (5 pages html) | pages servies par le routeur, aucun CDN |
 | `install/verification-rb2011.md` | la checklist à dérouler sur place |
 | Accès SSH au VPS (mot de passe ou clé) | déclarer la clé publique du routeur, vérifier `wg show` |
@@ -111,6 +112,7 @@ Dans WinBox > **Files**, glisser-déposer :
 
 - `rb2011-base.rsc`
 - `rb2011-hotspot.rsc`
+- `export-usage.rsc`
 - le dossier **`zinbconnect`** en gardant son nom, avec les 5 pages
   `login.html`, `alogin.html`, `status.html`, `logout.html`, `error.html`
   à l'intérieur (pas de sous-dossier).

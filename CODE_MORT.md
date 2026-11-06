@@ -70,3 +70,4 @@ Conformément à la règle de sécurité et de traçabilité, le nettoyage s'eff
   - Dans la version initiale du projet (v1), les codes étaient stockés dans `access_codes` (codes vierges) et migrés dans `current_codes` (codes actifs).
   - Depuis la Phase 3, l'application utilise exclusivement `batches` (les lots) et `tickets` (tous les tickets avec leur cycle de vie complet : `available`, `sold`, `active`, `used`, `expired`, `revoked`).
   - Les tables `access_codes` et `current_codes` sont vides (0 ligne). Elles sont conservées uniquement dans les scripts de migration pour compatibilité descendante avec de vieilles bases non migrées, mais ne sont plus appelées par le code runtime.
+

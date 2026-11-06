@@ -8,6 +8,9 @@
  */
 declare(strict_types=1);
 
+// Fuseau horaire officiel du projet (Sud-Kivu / Bukavu / Kitutu / Lubumbashi : UTC+2)
+date_default_timezone_set('Africa/Lubumbashi');
+
 // ------------------------------------------------------------------
 // .env — variables d'environnement (jamais dans git)
 // ------------------------------------------------------------------

@@ -296,8 +296,10 @@ function pdf_ticket_sheet(array $tickets, array $meta): string
             $tw = $x + $cellW - $tx - 7;
             $duration = trim((string)($t['duration'] ?? ''));
 
+            $priceVal = (float)($t['price'] ?? 0);
+            $priceStr = $priceVal > 0.0 ? format_money($priceVal) : 'ESSAI GRATUIT (TEST)';
             $pdf->text('F2', 12, $tx, $y + 12, (string)$t['plan'], $tw);
-            $pdf->text('F2', 13, $tx, $y + 29, format_money((float)$t['price']), $tw);
+            $pdf->text('F2', 13, $tx, $y + 29, $priceStr, $tw);
             $pdf->text('F1', 9, $tx, $y + 47, $duration !== '' ? 'Illimité pendant ' . $duration : 'Internet illimité', $tw);
             $pdf->text('F4', 15.5, $tx, $y + 65, (string)$t['code'], $tw);
             $pdf->line($tx, $y + 84, $tx + $tw, $y + 84);

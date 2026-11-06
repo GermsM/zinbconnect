@@ -120,6 +120,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['rsc'])) {
     exit;
 }
 
+if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['download_consumed_rsc'])) {
+    $rsc = export_consumed_routeros_rsc();
+    audit('consumed_rsc_exported', $actor, null);
+    $filename = 'zinbconnect_purge_consommes_' . date('Ymd_His') . '.rsc';
+    header('Content-Type: application/octet-stream');
+    header('Content-Disposition: attachment; filename="' . $filename . '"');
+    header('Content-Length: ' . strlen($rsc));
+    header('Cache-Control: no-store');
+    echo $rsc;
+    exit;
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $input  = json_input();
     csrf_require($input);
@@ -131,6 +143,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             json_out(['success' => true]);
 
         case 'dashboard':
+            // Rétention des journaux : purge automatique des logs > 30 jours (RGPD/minimisation des données)
+            prune_old_logs(30);
+
             $sales    = sales_stats();
             $usage    = usage_totals();
             $estimate = usage_estimate_tickets();
@@ -172,7 +187,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $quantity = (int)($input['quantity'] ?? 0);
             $unit     = isset($input['unit_price']) && $input['unit_price'] !== '' ? (float)$input['unit_price'] : null;
             $note     = isset($input['note']) ? mb_substr(trim((string)$input['note']), 0, 200) : null;
-            $result   = generate_batch($planId, $quantity, $unit, $actor, $note ?: null);
+            $isTest   = !empty($input['is_test']);
+            $result   = generate_batch($planId, $quantity, $unit, $actor, $note ?: null, $isTest);
             json_out($result);
 
         case 'batches':
@@ -208,7 +224,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (!$plan) {
                 json_out(['success' => false, 'message' => 'invalidPlan']);
             }
-            $rate = max(0.0, (float)($input['rate'] ?? $plan['rate']));
+            $rate = (int)round(max(0.0, (float)($input['rate'] ?? $plan['rate'])));
             $minutes = max(0, (int)($input['duration_minutes'] ?? 0));
             $days = max(0, (int)($input['duration_days'] ?? 0));
             if ($minutes === 0 && $days === 0) {
@@ -228,6 +244,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'label'   => $updated ? plan_label($updated) : '',
                 'plans'   => plans_all(),
             ]);
+
+        case 'import_usage':
+            $csv = (string)($input['csv_content'] ?? '');
+            if (trim($csv) === '') {
+                json_out(['success' => false, 'message' => 'emptyContent']);
+            }
+            $res = import_usage_csv($csv, $actor);
+            json_out(array_merge(['success' => $res['ok']], $res));
 
         case 'save_settings':
             $map = [
@@ -549,6 +573,7 @@ nav button:hover{background:rgba(255,255,255,.22)}
   <button data-tab="tickets">Tickets</button>
   <button data-tab="sales">Ventes</button>
   <button data-tab="sessions">Sessions</button>
+  <button data-tab="usage">Consommation & Starlink</button>
   <button data-tab="resellers">Revendeurs</button>
   <button data-tab="settings">Réglages</button>
   <button data-tab="backup">Sauvegarde</button>
@@ -608,6 +633,12 @@ nav button:hover{background:rgba(255,255,255,.22)}
         </div>
         <label for="gen-note">Note (facultatif)</label>
         <input id="gen-note" type="text" maxlength="120" placeholder="ex. lot revendeur marché">
+        <div style="margin:10px 0">
+          <label style="display:flex;align-items:center;gap:8px;font-weight:normal;cursor:pointer">
+            <input id="gen-test" type="checkbox" style="width:auto;margin:0">
+            <span><strong>Lot de test / essai gratuit</strong> (30 personnes, 0 FC, n'impacte pas les rapports de ventes)</span>
+          </label>
+        </div>
         <div class="actions">
           <button class="primary" id="genBtn" type="submit">Générer le lot</button>
         </div>
@@ -655,6 +686,52 @@ nav button:hover{background:rgba(255,255,255,.22)}
     <div class="card scroll">
       <table><thead><tr><th>Code</th><th>Forfait</th><th>Temps restant</th><th>Données</th><th></th></tr></thead><tbody id="sessions-body"></tbody></table>
       <p class="muted" id="sessions-note"></p>
+    </div>
+  </section>
+
+  <!-- ============ CONSOMMATION & STARLINK ============ -->
+  <section id="tab-usage">
+    <h2>Suivi du quota Starlink</h2>
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;margin-bottom:8px">
+        <span>Volume WAN consommé ce mois</span>
+        <strong id="usage-wan-vol">—</strong>
+      </div>
+      <div class="bar"><div id="usage-wan-bar" style="width:0%"></div></div>
+      <p class="muted" id="usage-wan-note" style="margin-top:6px">Limite mensuelle : 500 Go (Starlink Kitutu)</p>
+    </div>
+
+    <h2>Synchroniser l'usage depuis le routeur MikroTik</h2>
+    <div class="card">
+      <p>Pour remonter la consommation réelle (octets, uptime) de chaque ticket et actualiser les moyennes :</p>
+      <ol style="margin:8px 0 14px;padding-left:20px;font-size:14px;line-height:1.6">
+        <li>Sur le routeur, lancez : <code>/import file-name=export-usage.rsc</code> (ou attendez la tâche planifiée).</li>
+        <li>Dans WinBox &gt; <strong>Files</strong>, téléchargez le fichier <code>zinb_usage.csv</code>.</li>
+        <li>Chargez ce fichier ci-dessous ou collez son contenu, puis validez.</li>
+      </ol>
+      <input id="usageCsvFile" type="file" accept=".csv,text/plain" style="margin-bottom:10px">
+      <textarea id="usageCsvText" rows="5" placeholder="Ou collez ici le contenu de zinb_usage.csv…" style="width:100%;font-family:monospace;font-size:12px;padding:8px;border:1px solid #ddd6fe;border-radius:8px"></textarea>
+      <div class="actions" style="margin-top:10px">
+        <button class="primary" id="importUsageBtn" type="button">Importer l'usage du routeur</button>
+      </div>
+      <div class="msg" id="importUsageMsg"></div>
+    </div>
+
+    <h2>Consommation moyenne constatée par forfait</h2>
+    <div class="card scroll">
+      <table>
+        <thead><tr><th>Forfait</th><th>Tickets analysés</th><th>Volume moyen / ticket</th><th>Temps moyen / ticket</th></tr></thead>
+        <tbody id="usage-stats-body"><tr><td colspan="4" class="muted">Aucune donnée importée pour l'instant</td></tr></tbody>
+      </table>
+    </div>
+
+    <h2>Parade Reset / Restauration du routeur</h2>
+    <div class="card">
+      <p><strong>En cas de réinitialisation ou restauration d'une ancienne sauvegarde du routeur :</strong> les tickets déjà consommés redeviendraient neufs sur le hotspot. Ce script généré à partir de la base supprime d'un coup tous les tickets déjà utilisés, expirés ou révoqués.</p>
+      <div class="actions">
+        <a href="?download_consumed_rsc=1" class="ghost" style="display:inline-block;padding:12px 18px;text-decoration:none;font-weight:700">Télécharger le script de purge (.rsc)</a>
+      </div>
+      <p class="muted">À importer dans New Terminal sur le routeur : <code>/import file-name=zinbconnect_purge_consommes.rsc</code></p>
     </div>
   </section>
 
@@ -956,6 +1033,7 @@ nav button:hover{background:rgba(255,255,255,.22)}
     if (tab === 'tickets') { loadPlans(); loadBatches(); }
     if (tab === 'sales') loadSales();
     if (tab === 'sessions') loadSessions();
+    if (tab === 'usage') loadUsageStats();
     if (tab === 'resellers') loadResellers();
     if (tab === 'settings') { loadPlans(); loadSettings(); }
     if (tab === 'log') loadLog();
@@ -1071,8 +1149,25 @@ nav button:hover{background:rgba(255,255,255,.22)}
 
   $('gen-plan').addEventListener('change', function () {
     var opt = this.options[this.selectedIndex];
-    if (opt && opt.dataset.rate) $('gen-price').value = opt.dataset.rate;
+    if (opt && opt.dataset.rate && (!($('gen-test') && $('gen-test').checked))) {
+      $('gen-price').value = opt.dataset.rate;
+    }
   });
+
+  if ($('gen-test')) {
+    $('gen-test').onchange = function () {
+      if (this.checked) {
+        $('gen-price').value = 0;
+        $('gen-price').disabled = true;
+        $('gen-qty').value = 30;
+      } else {
+        $('gen-price').disabled = false;
+        var opt = $('gen-plan').options[$('gen-plan').selectedIndex];
+        if (opt && opt.dataset.rate) $('gen-price').value = opt.dataset.rate;
+        $('gen-qty').value = 20;
+      }
+    };
+  }
 
   // ---------- Génération de lot ----------
   $('genForm').addEventListener('submit', async function (e) {
@@ -1084,8 +1179,9 @@ nav button:hover{background:rgba(255,255,255,.22)}
       var r = await api('generate_batch', {
         subscription_id: Number($('gen-plan').value),
         quantity: qty,
-        unit_price: $('gen-price').value,
-        note: $('gen-note').value
+        unit_price: $('gen-test') && $('gen-test').checked ? 0 : $('gen-price').value,
+        note: $('gen-note').value,
+        is_test: $('gen-test') && $('gen-test').checked ? 1 : 0
       }, 180000);
       if (!r.ok) {
         showMsg($('genMsg'), 'Génération impossible. Vérifiez le forfait et la quantité.', false);
@@ -1266,6 +1362,62 @@ nav button:hover{background:rgba(255,255,255,.22)}
     });
     showMsg($('settingsMsg'), r.success ? 'Réglages enregistrés.' : 'Enregistrement impossible.', r.success);
   });
+
+  // ---------- Consommation & Starlink ----------
+  async function loadUsageStats() {
+    var d = await api('dashboard');
+    if (!d.success) return;
+    var u = d.usage;
+    $('usage-wan-vol').textContent = bytes(u.month) + ' / ' + bytes(u.quota);
+    $('usage-wan-bar').style.width = Math.min(100, u.month_pct) + '%';
+    $('usage-wan-bar').className = u.month_pct > 90 ? 'ko' : (u.month_pct > 70 ? 'warn' : '');
+    $('usage-wan-note').textContent = u.month_pct + ' % consommé du forfait Starlink (500 Go). ' +
+      (u.month === 0 ? 'Estimation tickets : ' + bytes(u.month_est) : '(Mesuré sur l\'interface WAN)');
+  }
+
+  if ($('usageCsvFile')) {
+    $('usageCsvFile').onchange = function () {
+      var file = this.files[0];
+      if (!file) return;
+      var reader = new FileReader();
+      reader.onload = function (e) {
+        $('usageCsvText').value = e.target.result;
+      };
+      reader.readAsText(file);
+    };
+  }
+
+  if ($('importUsageBtn')) {
+    $('importUsageBtn').onclick = async function () {
+      var csv = $('usageCsvText').value.trim();
+      if (!csv) {
+        showMsg($('importUsageMsg'), 'Veuillez coller le contenu ou choisir le fichier zinb_usage.csv.', false);
+        return;
+      }
+      $('importUsageBtn').disabled = true;
+      busy(true, 'Traitement de l\'usage du routeur…');
+      try {
+        var r = await api('import_usage', {csv_content: csv});
+        if (r.success) {
+          showMsg($('importUsageMsg'), 'Succès : ' + r.updated + ' ticket(s) mis à jour. WAN RX=' + bytes(r.wan_rx) + ' TX=' + bytes(r.wan_tx) + ' (Total ' + r.wan_total_fmt + ').', true);
+          if (r.stats && r.stats.length) {
+            $('usage-stats-body').innerHTML = r.stats.map(function (s) {
+              return '<tr><td><strong>' + esc(s.name) + '</strong></td><td>' + s.tickets_count + ' ticket(s)</td><td>' + s.avg_bytes_fmt + '</td><td>' + s.avg_uptime_fmt + '</td></tr>';
+            }).join('');
+          }
+          loadUsageStats();
+          loadDashboard();
+        } else {
+          showMsg($('importUsageMsg'), 'Erreur lors de l\'import : ' + (r.message || 'fichier invalide'), false);
+        }
+      } catch (err) {
+        showMsg($('importUsageMsg'), 'Erreur de communication : ' + err.message, false);
+      } finally {
+        busy(false);
+        $('importUsageBtn').disabled = false;
+      }
+    };
+  }
 
   // ---------- Sauvegarde / restauration ----------
   $('backupBtn').onclick = async function () {
