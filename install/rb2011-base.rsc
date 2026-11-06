@@ -227,9 +227,9 @@
   /ip service set [find name=ssh] address=10.100.0.0/24,10.20.50.0/24
 }
 :do {
-  /ip service set [find name=www] available-from=10.100.0.0/24,10.20.50.0/24
+  /ip service set [find name=www] port=8080 available-from=10.100.0.0/24,10.20.50.0/24
 } on-error={
-  /ip service set [find name=www] address=10.100.0.0/24,10.20.50.0/24
+  /ip service set [find name=www] port=8080 address=10.100.0.0/24,10.20.50.0/24
 }
 :do { /ip service set [find name=telnet] disabled=yes } on-error={ }
 :do { /ip service set [find name=ftp]    disabled=yes } on-error={ }
