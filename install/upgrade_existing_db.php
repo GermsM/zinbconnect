@@ -1,6 +1,6 @@
 <?php
 /**
- * Migration de la base Zinbconnect EXISTANTE (production InfinityFree) vers
+ * Migration de la base Zinbconnect EXISTANTE vers
  * l'organisation sécurisée de Phase 2, sans casser les données :
  *
  *   1. Sauvegarde SQL complète des tables sensibles dans backups/

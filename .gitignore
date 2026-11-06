@@ -1,7 +1,19 @@
+# Outils et interpréteurs locaux
 tools/
 
 # Environnement local (secrets) et données
 .env
+.env.*
+!.env.example
 data/
 backups/
+*.sqlite
+*.sqlite3
+*.sql
 *.log
+
+# Exports sensibles (codes en clair, clés privées WireGuard)
+*.rsc
+*.key
+*.conf
+*.csv

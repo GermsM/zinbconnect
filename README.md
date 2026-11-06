@@ -1,8 +1,9 @@
-# zinbconnect
-A online portal for community WiFi hubs powered by Starlink Satellite Internet
+# Zinbconnect
 
-Making Internet access easier at very low cost for all in Eastern DRC
-This is testnet repository and may subject to changes anytime
+Portail captif de tickets Wi-Fi et scripts d'infrastructure pour MikroTik RouterOS 7.
+Alimenté par Internet par satellite Starlink pour les hubs communautaires au Sud-Kivu (RDC).
 
-For more, visit : https://zinbotech.great-site.net
-Or contact us at : zinboentreprise@gmail.com
+- **Matériel cible** : MikroTik RB2011UiAS-2HnD-IN (RouterOS 7.25.1) + TP-Link EAP225-Outdoor (PoE passif 24V sur ETH10).
+- **Architecture** : Authentification par tickets (codes uniques 12 caractères, 60 bits d'entropie), import périodique .rsc sans API distante, tunnel WireGuard d'administration.
+- **Documentation et guides de déploiement** : voir le dossier `install/`.
+

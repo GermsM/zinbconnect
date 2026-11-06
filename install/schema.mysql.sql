@@ -1,5 +1,5 @@
 -- ============================================================
--- Zinbconnect — schéma MySQL (InfinityFree, MySQL 5.7+/8.x)
+-- Zinbconnect — schéma MySQL (MySQL 5.7+/8.x / MariaDB)
 -- Création possible à chaud : CREATE TABLE IF NOT EXISTS.
 -- Les colonnes ajoutées sur une base existante sont gérées par
 -- install/upgrade_existing_db.php (avec sauvegarde préalable).
