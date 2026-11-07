@@ -243,7 +243,60 @@ function _clean(s) {
 function showErr(title, txt) {
   var b = document.getElementById('jsMsg');
   b.className = 'msg ko show';
+  b.style.display = 'block';
+  b.style.opacity = '1';
+  b.style.transform = 'none';
   b.innerHTML = '<b>' + title + '</b>' + txt;
+  dismissAfter(b, 5000);
+}
+
+function dismissAfter(el, delay) {
+  if (!el) return;
+  setTimeout(function () {
+    el.style.transition = 'opacity 0.6s ease, transform 0.6s ease';
+    el.style.opacity = '0';
+    el.style.transform = 'translateY(-6px)';
+    setTimeout(function () { el.style.display = 'none'; }, 600);
+  }, delay);
+}
+
+// ---- Traduction et humanisation des messages d'erreur RouterOS ----
+function humanizeError() {
+  var box = document.getElementById('message');
+  if (!box) return;
+  var raw = (box.innerText || box.textContent || '').toLowerCase();
+
+  if (raw.indexOf('invalid username or password') !== -1 || raw.indexOf('invalid') !== -1) {
+    box.innerHTML = '<b>Code invalide ou inexistant</b>Ce code de ticket n\'existe pas. Vérifiez bien les 12 caractères inscrits sur votre carte (il n\'y a jamais de 0, O, 1, I ou l).';
+  } else if (raw.indexOf('already logged in') !== -1) {
+    box.innerHTML = '<b>Appareil déjà connecté</b>Ce ticket est déjà en cours d\'utilisation sur un autre appareil. Un seul appareil à la fois peut naviguer.';
+  } else if (raw.indexOf('uptime limit') !== -1 || raw.indexOf('limit-uptime') !== -1) {
+    box.innerHTML = '<b>Forfait expiré</b>La durée de votre ticket est terminée. Achetez une nouvelle carte auprès d\'un revendeur.';
+  } else if (raw.indexOf('traffic limit') !== -1 || raw.indexOf('limit-bytes') !== -1 || raw.indexOf('transfer limit') !== -1) {
+    box.innerHTML = '<b>Quota de données atteint</b>Le volume de données autorisé pour ce forfait est consommé.';
+  } else if (raw.indexOf('not responding') !== -1) {
+    box.innerHTML = '<b>Serveur momentanément indisponible</b>Veuillez patienter quelques instants et réessayer.';
+  }
+
+  dismissAfter(box, 5000);
+}
+
+// Estomper immédiatement dès que l'utilisateur commence à retaper son code
+var codeInput = document.getElementById('code');
+if (codeInput) {
+  codeInput.addEventListener('input', function () {
+    var m1 = document.getElementById('message');
+    var m2 = document.getElementById('jsMsg');
+    if (m1) m1.style.display = 'none';
+    if (m2) m2.style.display = 'none';
+  });
+}
+
+// Exécuter l'humanisation dès le chargement de la page
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', humanizeError);
+} else {
+  humanizeError();
 }
 
 function go(ev) {

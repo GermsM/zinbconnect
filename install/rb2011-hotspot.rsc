@@ -70,10 +70,13 @@
 # Les limites de temps et de donnees restent posees utilisateur par
 # utilisateur par l'export .rsc de l'application (limit-uptime,
 # limit-bytes-total), le profil ne fait que fixer le nombre d'appareils.
+# rate-limit="512k/2M" : bride chaque client a 2 Mbit/s en telechargement
+# et 512 kbit/s en envoi. Suffisant pour WhatsApp, audio et video fluide en 480p,
+# mais bloque le streaming 1080p/4K qui vide le quota Starlink en 30 minutes.
 :if ([:len [/ip hotspot user profile find name=code-usable]] = 0) do={
-  /ip hotspot user profile add name=code-usable shared-users=1
+  /ip hotspot user profile add name=code-usable shared-users=1 rate-limit="512k/2M"
 } else={
-  /ip hotspot user profile set [find name=code-usable] shared-users=1
+  /ip hotspot user profile set [find name=code-usable] shared-users=1 rate-limit="512k/2M"
 }
 
 # ---------- 5. Validite des tickets (fenetre des la 1re connexion + expiration des codes inutilises) ----------
