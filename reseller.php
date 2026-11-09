@@ -218,7 +218,19 @@ footer{text-align:center;font-size:12px;color:var(--muted);padding:14px 16px 22p
           csrf: csrf
         })
       });
-      var d = await res.json();
+      var d;
+      try {
+        d = await res.json();
+      } catch (errJson) {
+        if (!res.ok) {
+          show('Erreur serveur HTTP ' + res.status + ' (' + res.statusText + '). Vérifiez les logs Apache et la configuration de la base de données.', false);
+        } else {
+          show('Réponse serveur invalide (non JSON).', false);
+        }
+        btn.disabled = false;
+        btn.textContent = 'Se connecter';
+        return;
+      }
       if (d.success) {
         show('Connexion réussie, ouverture…', true);
         location.href = d.user_type === 'admin.php' ? 'admin.php' : 'dashboard.php';

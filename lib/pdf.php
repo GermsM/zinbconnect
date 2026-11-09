@@ -222,6 +222,9 @@ function pdf_ticket_sheet(array $tickets, array $meta): string
 {
     $portalName = $meta['portal_name'] ?? (setting('portal_name') ?? 'Zinbconnect');
     $portalUrl  = trim((string)($meta['portal_url'] ?? ''));
+    if ($portalUrl === '') {
+        $portalUrl = 'http://10.20.30.1/login.html';
+    }
     $batch      = (string)($meta['batch'] ?? '');
     $date       = (string)($meta['date'] ?? date('d/m/Y'));
 

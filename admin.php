@@ -70,7 +70,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_GET['pdf'])) {
     set_time_limit(120);
     $pdf = pdf_ticket_sheet($tickets, [
         'portal_name' => setting('portal_name') ?? 'Zinbconnect',
-        'portal_url'  => setting('portal_url', ''),
+        'portal_url'  => setting('portal_url', 'http://10.20.30.1/login.html'),
         'batch'       => $batch['reference'],
         'date'        => date('d/m/Y'),
     ]);

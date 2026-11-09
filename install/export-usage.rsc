@@ -12,8 +12,7 @@
 #
 # Execution manuelle en New Terminal :
 #   /import file-name=export-usage.rsc
-# Ou planification automatique :
-#   /system scheduler add name=export-usage interval=1d on-event="/import file-name=export-usage.rsc"
+# Ou clic sur "Run Script" dans WinBox > System > Scripts > export-usage
 # =====================================================================
 
 :local fileName "zinb_usage.csv"
@@ -28,12 +27,7 @@
   :log warning "export-usage : impossible de lire eth-wan"
 }
 
-# Initialisation du fichier CSV avec l'en-tete et les compteurs WAN
-/file print file=$fileName
-:delay 1s
-
-:local header ("#WAN_RX=" . $wanRx . ",WAN_TX=" . $wanTx . "\r\ncode,uptime,bytes_in,bytes_out,bytes_total,comment\r\n")
-/file set $fileName contents=$header
+:local content ("#WAN_RX=" . $wanRx . ",WAN_TX=" . $wanTx . "\r\ncode,uptime,bytes_in,bytes_out,bytes_total,comment\r\n")
 
 # Parcours des utilisateurs hotspot
 :foreach i in=[/ip hotspot user find] do={
@@ -50,8 +44,33 @@
   :if ([:len $bTot] = 0)  do={ :set $bTot 0 }
 
   :local row ($uName . "," . $uTime . "," . $bIn . "," . $bOut . "," . $bTot . ",\"" . $uCom . "\"\r\n")
-  /file set $fileName contents=([/file get $fileName contents] . $row)
+  :set content ($content . $row)
 }
 
-:log info ("Zinbconnect : export de l'usage termine dans " . $fileName . " (WAN RX=" . $wanRx . " TX=" . $wanTx . ")")
+# Nettoyage des anciens exports pour eviter les doublons ou conflits
+:do { /file remove [find name="zinb_usage.csv"] } on-error={}
+:do { /file remove [find name="zinb_usage.csv.txt"] } on-error={}
+:do { /file remove [find name="flash/zinb_usage.csv"] } on-error={}
+:do { /file remove [find name="flash/zinb_usage.csv.txt"] } on-error={}
 
+# 1. Methode RouterOS 7 native (/file add)
+:local created false
+:do {
+  /file add name="zinb_usage.csv" contents=$content
+  :set created true
+} on-error={}
+
+# 2. Methode RouterOS classique de secours (/file print puis /file set)
+:if ($created = false) do={
+  /file print file="zinb_usage.csv"
+  :delay 1s
+  :local f [/file find name="zinb_usage.csv"]
+  :if ([:len $f] = 0) do={ :set f [/file find name="zinb_usage.csv.txt"] }
+  :if ([:len $f] = 0) do={ :set f [/file find name="flash/zinb_usage.csv"] }
+  :if ([:len $f] = 0) do={ :set f [/file find name="flash/zinb_usage.csv.txt"] }
+  :if ([:len $f] > 0) do={
+    /file set $f contents=$content
+  }
+}
+
+:log info ("Zinbconnect : export de l'usage termine avec succes (WAN RX=" . $wanRx . " TX=" . $wanTx . "). Fichier disponible dans Files.")

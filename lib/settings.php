@@ -11,6 +11,7 @@ const SETTING_DEFAULTS = [
     'starlink_quota_bytes' => '536870912000',   // 500 Gio (forfait Local Priority)
     'currency'             => 'FC',
     'portal_name'          => 'Zinbconnect Kitutu',
+    'portal_url'           => 'http://10.20.30.1/login.html',
     'reseller_commission'  => '25',             // pourcentage reversé au revendeur
     'low_stock_threshold'  => '20',             // alerte stock de tickets
 ];

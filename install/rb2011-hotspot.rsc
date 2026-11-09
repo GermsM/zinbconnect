@@ -27,17 +27,14 @@
 #
 # Valeurs valides en RouterOS 7 : cookie, http-chap, http-pap, https,
 # mac, mac-cookie, trial.
-# ATTENTION : l'ancien script utilisait "login-by=http-pam", qui n'existe
-# pas. L'import echouait sur cette ligne, le profil n'etait pas cree et
-# le hotspot non plus : aucun portail ne fonctionnait.
-#
-# Si un jour le portail passe en HTTPS, ajouter : login-by=https,http-chap
-# cookie peut etre ajoute (login-by=http-chap,cookie) pour eviter de
-# ressaisir le code a chaque reveil du telephone.
+# Reconexion transparente sans retaper le code :
+# mac-cookie et cookie permettent a RouterOS de se souvenir de l'adresse MAC
+# du telephone pendant 3 jours (ou la duree du forfait). Si l'utilisateur part
+# et revient, il est reconnecte automatiquement et son forfait continue sans ressaisie !
 :if ([:len [/ip hotspot profile find name=zinbconnect]] = 0) do={
-  /ip hotspot profile add name=zinbconnect hotspot-address=10.20.30.1 html-directory=zinbconnect login-by=http-chap
+  /ip hotspot profile add name=zinbconnect hotspot-address=10.20.30.1 html-directory=zinbconnect login-by=http-pap,http-chap,mac-cookie,cookie mac-cookie-timeout=3d
 } else={
-  /ip hotspot profile set [find name=zinbconnect] hotspot-address=10.20.30.1 html-directory=zinbconnect login-by=http-chap
+  /ip hotspot profile set [find name=zinbconnect] hotspot-address=10.20.30.1 html-directory=zinbconnect login-by=http-pap,http-chap,mac-cookie,cookie mac-cookie-timeout=3d
 }
 
 # ---------- 2. Serveur hotspot ----------
@@ -50,9 +47,22 @@
   /ip hotspot set [find name=hotspot1] interface=lan profile=zinbconnect disabled=no
 }
 
-# ---------- 3. Walled garden (minimal en Voie 1) ----------
-# Avant connexion, seul le DNS local et le diagnostic passent : la page
-# de login est servie PAR le routeur, aucun site externe n'est requis.
+# ---------- 3. Walled garden (Autorisations avant login) ----------
+# Avant connexion, le DNS local et le diagnostic passent.
+# De plus, le VPS Azure (20.164.1.221) est autorise a la fois au niveau HTTP
+# (/ip hotspot walled-garden) et au niveau IP (/ip hotspot walled-garden ip)
+# pour permettre aux revendeurs et administrateurs d'ouvrir reseller.php et admin.php
+# depuis le Wi-Fi sans etre interceptes par le portail !
+
+# Walled-garden HTTP (interception port 80 - indispensable pour http://20.164.1.221/)
+:if ([:len [/ip hotspot walled-garden find dst-host="20.164.1.221"]] = 0) do={
+  /ip hotspot walled-garden add dst-host=20.164.1.221 comment="Acces VPS Azure Zinbconnect"
+}
+:if ([:len [/ip hotspot walled-garden find dst-host="10.100.0.1"]] = 0) do={
+  /ip hotspot walled-garden add dst-host=10.100.0.1 comment="Acces WireGuard VPS"
+}
+
+# Walled-garden IP (couche 3 brute et ICMP)
 :if ([:len [/ip hotspot walled-garden ip find comment="DNS vers la passerelle avant login"]] = 0) do={
   /ip hotspot walled-garden ip add action=accept disabled=no src-address=10.20.30.0/24 dst-address=10.20.30.1 protocol=udp dst-port=53 comment="DNS vers la passerelle avant login"
 }
@@ -61,6 +71,12 @@
 }
 :if ([:len [/ip hotspot walled-garden ip find comment="Diagnostic ping"]] = 0) do={
   /ip hotspot walled-garden ip add action=accept disabled=no src-address=10.20.30.0/24 protocol=icmp comment="Diagnostic ping"
+}
+:if ([:len [/ip hotspot walled-garden ip find comment="Acces VPS Azure Zinbconnect"]] = 0) do={
+  /ip hotspot walled-garden ip add action=accept disabled=no dst-address=20.164.1.221 comment="Acces VPS Azure Zinbconnect"
+}
+:if ([:len [/ip hotspot walled-garden ip find comment="Acces WireGuard VPS"]] = 0) do={
+  /ip hotspot walled-garden ip add action=accept disabled=no dst-address=10.100.0.1 comment="Acces WireGuard VPS"
 }
 
 # ---------- 4. Profil utilisateurs hotspot (les codes) ----------

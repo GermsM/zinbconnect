@@ -52,14 +52,14 @@ p { font-size: 15px; color: #4b5563; margin: 0 0 18px; line-height: 1.5; }
   <div class="card">
     <h1>Connexion réussie !</h1>
     <p>Votre ticket a été validé. Vous pouvez désormais naviguer librement sur Internet.</p>
-    <a class="btn" href="$(link-status)">Voir ma session & mon temps restant</a>
-    <p class="small">Redirection automatique en cours…</p>
+    <a class="btn" href="$(link-status)">Voir ma consommation & mon temps restant</a>
+    <p class="small">Ouverture de votre suivi de consommation…</p>
   </div>
 </div>
 <script>
 setTimeout(function () {
-  window.location.href = "$(link-redirect)";
-}, 2000);
+  window.location.href = "$(link-status)";
+}, 1500);
 </script>
 </body>
 </html>

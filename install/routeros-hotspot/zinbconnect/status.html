@@ -71,7 +71,15 @@ button.logout:active { background: #fee2e2; }
 }
 
 .hint { font-size: 13px; color: var(--muted); margin-top: 12px; text-align: center; line-height: 1.5; }
-footer { text-align: center; font-size: 12px; color: var(--muted); margin-top: 18px; }
+
+.contact-section { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line); text-align: center; }
+.contact-title { font-size: 13px; font-weight: 700; color: var(--v); margin-bottom: 10px; }
+.contact-grid { display: flex; flex-direction: column; gap: 9px; max-width: 320px; margin: 0 auto; }
+.contact-btn { display: flex; align-items: center; justify-content: center; gap: 9px; padding: 11px 16px; border-radius: 12px; font-size: 13.5px; font-weight: 600; text-decoration: none; transition: transform .12s, box-shadow .2s; }
+.contact-btn:active { transform: scale(.98); }
+.contact-btn.wa { background: #25d366; color: #fff; box-shadow: 0 4px 12px rgba(37,211,102,.25); }
+.contact-btn.mail { background: #fff; color: var(--v); border: 1.5px solid #ddd6fe; box-shadow: 0 4px 12px rgba(91,33,182,.08); }
+.brand-sub { font-size: 11.5px; color: var(--muted); margin-top: 12px; }
 
 @keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
 @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
@@ -116,18 +124,33 @@ footer { text-align: center; font-size: 12px; color: var(--muted); margin-top: 1
       </div>
       $(endif)
 
-      <a class="btn-surf" href="http://google.com">Continuer à naviguer</a>
+      <a class="btn-surf" href="http://google.com">Continuer à naviguer sur Internet</a>
+
+      <div style="margin-top:14px;padding:10px 12px;background:#f5f3ff;border:1px solid #ede9fe;border-radius:10px;font-size:13px;color:#5b21b6;text-align:center">
+        💡 <strong>Astuce :</strong> Tapez <strong>10.20.30.1</strong> dans votre navigateur à tout moment pour revenir voir votre temps restant.
+      </div>
 
       <form name="logout" action="$(link-logout)" method="post">
-        <button class="logout" type="submit">Se déconnecter</button>
+        <button class="logout" type="submit">Mettre en pause / Se déconnecter</button>
       </form>
 
-      <p class="hint">Vous pouvez vous déconnecter pour préserver votre temps restant et vous reconnecter plus tard avec le même code.</p>
+      <p class="hint">Vous pouvez vous déconnecter pour préserver votre temps restant et vous reconnecter plus tard sans retaper votre code.</p>
     </section>
   </main>
 
-  <footer>
-    Zinbconnect · Accès Wi-Fi Public
+  <footer class="contact-section">
+    <div class="contact-title">Besoin d'aide ou d'un forfait ? Contactez-nous</div>
+    <div class="contact-grid">
+      <a class="contact-btn wa" href="https://wa.me/243990034591" target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M12.04 2C6.58 2 2.13 6.45 2.13 11.91C2.13 13.66 2.59 15.36 3.45 16.86L2.05 22L7.3 20.62C8.75 21.41 10.38 21.83 12.04 21.83C17.5 21.83 21.95 17.38 21.95 11.92C21.95 9.27 20.92 6.78 19.05 4.91C17.18 3.03 14.69 2 12.04 2M12.05 3.67C14.25 3.67 16.31 4.53 17.87 6.09C19.42 7.65 20.28 9.72 20.28 11.92C20.28 16.46 16.58 20.15 12.04 20.15C10.56 20.15 9.11 19.76 7.85 19L7.55 18.83L4.43 19.65L5.26 16.61L5.06 16.29C4.24 15 3.8 13.47 3.8 11.91C3.81 7.37 7.5 3.67 12.05 3.67M9.53 7.34C9.33 7.34 9 7.42 8.72 7.72C8.45 8.03 7.68 8.75 7.68 10.22C7.68 11.7 8.76 13.12 8.91 13.32C9.06 13.52 11.03 16.56 14.05 17.86C14.77 18.17 15.33 18.36 15.77 18.5C16.5 18.73 17.15 18.7 17.68 18.62C18.27 18.53 19.5 17.88 19.76 17.15C20.01 16.41 20.01 15.78 19.93 15.65C19.86 15.52 19.66 15.45 19.36 15.3C19.06 15.15 17.58 14.42 17.3 14.32C17.03 14.22 16.83 14.17 16.63 14.47C16.43 14.77 15.86 15.45 15.68 15.65C15.51 15.85 15.33 15.88 15.03 15.73C14.73 15.58 13.77 15.26 12.63 14.25C11.75 13.46 11.15 12.49 10.98 12.19C10.8 11.89 10.96 11.73 11.11 11.58C11.24 11.45 11.41 11.23 11.56 11.06C11.71 10.88 11.76 10.76 11.86 10.56C11.96 10.36 11.91 10.18 11.83 10.03C11.76 9.88 11.16 8.41 10.91 7.81C10.67 7.22 10.42 7.31 10.24 7.3C10.07 7.3 9.87 7.3 9.67 7.3L9.53 7.34Z"/></svg>
+        <span>WhatsApp : +243 990 034 591</span>
+      </a>
+      <a class="contact-btn mail" href="mailto:mwangugermain33@gmail.com">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>
+        <span>mwangugermain33@gmail.com</span>
+      </a>
+    </div>
+    <div class="brand-sub">Zinbconnect · Wi-Fi Haut Débit Kitutu</div>
   </footer>
 </div>
 </body>

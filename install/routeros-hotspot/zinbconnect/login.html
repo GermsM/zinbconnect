@@ -118,8 +118,14 @@ details p, details li { font-size: 14px; color: #374151; line-height: 1.5; }
 details ul { padding-left: 18px; margin: 0 0 12px; }
 details li { margin-bottom: 7px; }
 
-footer { text-align: center; font-size: 12px; color: var(--muted); margin-top: 18px; }
-footer a { color: var(--v); }
+.contact-section { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line); text-align: center; }
+.contact-title { font-size: 13px; font-weight: 700; color: var(--v); margin-bottom: 10px; }
+.contact-grid { display: flex; flex-direction: column; gap: 9px; max-width: 320px; margin: 0 auto; }
+.contact-btn { display: flex; align-items: center; justify-content: center; gap: 9px; padding: 11px 16px; border-radius: 12px; font-size: 13.5px; font-weight: 600; text-decoration: none; transition: transform .12s, box-shadow .2s; }
+.contact-btn:active { transform: scale(.98); }
+.contact-btn.wa { background: #25d366; color: #fff; box-shadow: 0 4px 12px rgba(37,211,102,.25); }
+.contact-btn.mail { background: #fff; color: var(--v); border: 1.5px solid #ddd6fe; box-shadow: 0 4px 12px rgba(91,33,182,.08); }
+.brand-sub { font-size: 11.5px; color: var(--muted); margin-top: 12px; }
 
 #camWrap { display: none; margin-top: 12px; border-radius: 14px; overflow: hidden; background: #000; position: relative; }
 #camWrap.on { display: block; animation: rise .25s ease both; }
@@ -156,7 +162,8 @@ footer a { color: var(--v); }
                autocapitalize="characters" spellcheck="false" inputmode="text"
                placeholder="EX : K7M2PQRS9TUV" required>
         <button id="submitBtn" type="submit">Se connecter</button>
-        <button id="scanBtn" class="ghost" type="button">Se connecter avec le QR code</button>
+        <button id="scanBtn" class="ghost" type="button">Scanner le QR code</button>
+        <input type="file" id="qrCapture" accept="image/*" capture="environment" style="display:none">
         <p class="hint">Le code figure sur votre carte. Il n'y a jamais de 0, O, 1, I ou l.</p>
       </form>
 
@@ -221,33 +228,35 @@ footer a { color: var(--v); }
     <p class="hint" style="text-align:center;margin-top:10px">Une connexion lente ? Cette page reste légère pour fonctionner partout.</p>
   </main>
 
-  <footer>
-    Zinbconnect · <a href="http://10.100.0.1/dashboard.php">Espace revendeur</a>
+  <footer class="contact-section">
+    <div class="contact-title">Besoin d'aide ou d'un forfait ? Contactez-nous</div>
+    <div class="contact-grid">
+      <a class="contact-btn wa" href="https://wa.me/243990034591" target="_blank" rel="noopener">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M12.04 2C6.58 2 2.13 6.45 2.13 11.91C2.13 13.66 2.59 15.36 3.45 16.86L2.05 22L7.3 20.62C8.75 21.41 10.38 21.83 12.04 21.83C17.5 21.83 21.95 17.38 21.95 11.92C21.95 9.27 20.92 6.78 19.05 4.91C17.18 3.03 14.69 2 12.04 2M12.05 3.67C14.25 3.67 16.31 4.53 17.87 6.09C19.42 7.65 20.28 9.72 20.28 11.92C20.28 16.46 16.58 20.15 12.04 20.15C10.56 20.15 9.11 19.76 7.85 19L7.55 18.83L4.43 19.65L5.26 16.61L5.06 16.29C4.24 15 3.8 13.47 3.8 11.91C3.81 7.37 7.5 3.67 12.05 3.67M9.53 7.34C9.33 7.34 9 7.42 8.72 7.72C8.45 8.03 7.68 8.75 7.68 10.22C7.68 11.7 8.76 13.12 8.91 13.32C9.06 13.52 11.03 16.56 14.05 17.86C14.77 18.17 15.33 18.36 15.77 18.5C16.5 18.73 17.15 18.7 17.68 18.62C18.27 18.53 19.5 17.88 19.76 17.15C20.01 16.41 20.01 15.78 19.93 15.65C19.86 15.52 19.66 15.45 19.36 15.3C19.06 15.15 17.58 14.42 17.3 14.32C17.03 14.22 16.83 14.17 16.63 14.47C16.43 14.77 15.86 15.45 15.68 15.65C15.51 15.85 15.33 15.88 15.03 15.73C14.73 15.58 13.77 15.26 12.63 14.25C11.75 13.46 11.15 12.49 10.98 12.19C10.8 11.89 10.96 11.73 11.11 11.58C11.24 11.45 11.41 11.23 11.56 11.06C11.71 10.88 11.76 10.76 11.86 10.56C11.96 10.36 11.91 10.18 11.83 10.03C11.76 9.88 11.16 8.41 10.91 7.81C10.67 7.22 10.42 7.31 10.24 7.3C10.07 7.3 9.87 7.3 9.67 7.3L9.53 7.34Z"/></svg>
+        <span>WhatsApp : +243 990 034 591</span>
+      </a>
+      <a class="contact-btn mail" href="mailto:mwangugermain33@gmail.com">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>
+        <span>mwangugermain33@gmail.com</span>
+      </a>
+    </div>
+    <div class="brand-sub">Zinbconnect · Wi-Fi Haut Débit Kitutu</div>
   </footer>
 </div>
 
 <script>
-/* Défi CHAP fourni par RouterOS (login-by=http-chap). Le mot de passe
-   envoyé est MD5(chap-id + code + chap-challenge) : le code ne circule
-   jamais en clair, même sur un Wi-Fi ouvert. */
-var CHAP_ID = '', CHAP_CHALLENGE = '';
-$(if chap-id)
-CHAP_ID = '$(chap-id)';
-CHAP_CHALLENGE = '$(chap-challenge)';
-$(endif)
-
 function _clean(s) {
   return String(s || '').replace(/[\s\-_\.]/g, '').toUpperCase();
 }
 
-function showErr(title, txt) {
+function showErr(title, txt, delay) {
   var b = document.getElementById('jsMsg');
   b.className = 'msg ko show';
   b.style.display = 'block';
   b.style.opacity = '1';
   b.style.transform = 'none';
   b.innerHTML = '<b>' + title + '</b>' + txt;
-  dismissAfter(b, 5000);
+  dismissAfter(b, delay || 5000);
 }
 
 function dismissAfter(el, delay) {
@@ -310,120 +319,128 @@ function go(ev) {
   document.getElementById('submitBtn').disabled = true;
   document.getElementById('submitBtn').textContent = 'Connexion en cours…';
   f.elements.username.value = c;
-  f.elements.password.value = CHAP_ID ? hex_md5(CHAP_ID + c + CHAP_CHALLENGE) : c;
+  f.elements.password.value = c;
   f.submit();
   return false;
 }
 
-/* Implémentation MD5 pure JavaScript autonome (RFC 1321) */
-function hex_md5(input) {
-  var K = [
-    0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
-    0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821,
-    0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa, 0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8,
-    0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed, 0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a,
-    0xfffa3942, 0x8771f681, 0x6d9d6122, 0xfde5380c, 0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70,
-    0x289b7ec6, 0xeaa127fa, 0xd4ef3085, 0x04881d05, 0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665,
-    0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
-    0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1, 0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391
-  ];
-  var S = [
-    7, 12, 17, 22,  7, 12, 17, 22,  7, 12, 17, 22,  7, 12, 17, 22,
-    5,  9, 14, 20,  5,  9, 14, 20,  5,  9, 14, 20,  5,  9, 14, 20,
-    4, 11, 16, 23,  4, 11, 16, 23,  4, 11, 16, 23,  4, 11, 16, 23,
-    6, 10, 15, 21,  6, 10, 15, 21,  6, 10, 15, 21,  6, 10, 15, 21
-  ];
-  var bytes = [];
-  for (var i = 0; i < input.length; i++) {
-    var code = input.charCodeAt(i);
-    if (code < 128) { bytes.push(code); }
-    else if (code < 2048) { bytes.push(192 | (code >> 6), 128 | (code & 63)); }
-    else { bytes.push(224 | (code >> 12), 128 | ((code >> 6) & 63), 128 | (code & 63)); }
-  }
-  var bitLen = bytes.length * 8;
-  bytes.push(0x80);
-  while ((bytes.length % 64) !== 56) { bytes.push(0); }
-  for (var i = 0; i < 8; i++) { bytes.push((bitLen >>> (i * 8)) & 0xff); }
-  var a0 = 0x67452301, b0 = 0xefcdab89, c0 = 0x98badcfe, d0 = 0x10325476;
-  for (var i = 0; i < bytes.length; i += 64) {
-    var M = [];
-    for (var j = 0; j < 16; j++) {
-      M[j] = bytes[i + j * 4] | (bytes[i + j * 4 + 1] << 8) | (bytes[i + j * 4 + 2] << 16) | (bytes[i + j * 4 + 3] << 24);
-    }
-    var A = a0, B = b0, C = c0, D = d0;
-    for (var k = 0; k < 64; k++) {
-      var F, g;
-      if (k < 16) { F = (B & C) | (~B & D); g = k; }
-      else if (k < 32) { F = (D & B) | (~D & C); g = (5 * k + 1) % 16; }
-      else if (k < 48) { F = B ^ C ^ D; g = (3 * k + 5) % 16; }
-      else { F = C ^ (B | ~D); g = (7 * k) % 16; }
-      var tmp = D; D = C; C = B;
-      var x = (A + F + K[k] + M[g]) | 0;
-      var s = S[k % 4 + 4 * Math.floor(k / 16)];
-      B = (B + ((x << s) | (x >>> (32 - s)))) | 0;
-      A = tmp;
-    }
-    a0 = (a0 + A) | 0; b0 = (b0 + B) | 0; c0 = (c0 + C) | 0; d0 = (d0 + D) | 0;
-  }
-  function h(n) {
-    var out = '';
-    for (var i = 0; i < 4; i++) {
-      var b = (n >>> (i * 8)) & 0xff;
-      out += (b < 16 ? '0' : '') + b.toString(16);
-    }
-    return out;
-  }
-  return h(a0) + h(b0) + h(c0) + h(d0);
-}
-
-// ---- Scanner QR code caméra ----
+// ---- Scanner QR code 100% hors-ligne ----
 var stream = null;
 function stopCamera() {
   if (stream) { stream.getTracks().forEach(function (t) { t.stop(); }); stream = null; }
-  document.getElementById('camWrap').classList.remove('on');
-}
-document.getElementById('scanBtn').addEventListener('click', async function () {
-  if (!('BarcodeDetector' in window)) {
-    showErr('Scan indisponible', "Visez le QR de la carte avec l'appareil photo de votre smartphone pour remplir le code automatiquement.");
-    return;
-  }
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({video: {facingMode: 'environment'}});
-  } catch (err) {
-    showErr('Caméra inaccessible', "Autorisez l'accès à la caméra dans votre navigateur, ou saisissez le code.");
-    return;
-  }
   var wrap = document.getElementById('camWrap');
-  var video = document.getElementById('cam');
-  wrap.classList.add('on');
-  video.srcObject = stream;
-  try { await video.play(); } catch (err) {}
+  if (wrap) wrap.classList.remove('on');
+}
 
-  var detector = new BarcodeDetector({formats: ['qr_code']});
-  var loop = async function () {
-    if (!stream) return;
+function decodeImage(img) {
+  var canvas = document.createElement('canvas');
+  var maxDim = 1000;
+  var w = img.width, h = img.height;
+  if (w > maxDim || h > maxDim) {
+    if (w > h) { h = Math.round(h * maxDim / w); w = maxDim; }
+    else { w = Math.round(w * maxDim / h); h = maxDim; }
+  }
+  canvas.width = w; canvas.height = h;
+  var ctx = canvas.getContext('2d');
+  ctx.drawImage(img, 0, 0, w, h);
+  var imgData = ctx.getImageData(0, 0, w, h);
+
+  var raw = null;
+  if (window.jsQR) {
     try {
-      var found = await detector.detect(video);
-      if (found && found.length) {
-        var raw = found[0].rawValue || '';
-        var code = raw;
-        try {
-          var u = new URL(raw);
-          code = u.searchParams.get('c') || raw;
-        } catch (e) { code = raw; }
-        var clean = _clean(code);
-        if (clean.length >= 6) {
-          stopCamera();
-          document.getElementById('code').value = clean;
-          go();
-          return;
-        }
-      }
+      var res = window.jsQR(imgData.data, w, h, { inversionAttempts: "dontInvert" });
+      if (!res) res = window.jsQR(imgData.data, w, h, { inversionAttempts: "onlyInvert" });
+      if (res && res.data) raw = res.data;
     } catch (e) {}
-    setTimeout(loop, 250);
-  };
-  loop();
-});
+  }
+  return raw;
+}
+
+function processQrResult(raw) {
+  if (!raw) return false;
+  var code = raw;
+  try {
+    var u = new URL(raw);
+    code = u.searchParams.get('c') || raw;
+  } catch (e) {
+    var m = String(raw).match(/[?&]c=([A-Za-z0-9]+)/);
+    if (m) code = m[1];
+  }
+  var clean = _clean(code);
+  if (clean.length >= 6) {
+    stopCamera();
+    document.getElementById('code').value = clean;
+    go();
+    return true;
+  }
+  return false;
+}
+
+// Gestion de la capture photo native (fonctionne sur tout smartphone en HTTP)
+var qrCapture = document.getElementById('qrCapture');
+if (qrCapture) {
+  qrCapture.addEventListener('change', function (e) {
+    var file = e.target.files && e.target.files[0];
+    if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function (rev) {
+      var img = new Image();
+      img.onload = function () {
+        var raw = decodeImage(img);
+        if (!processQrResult(raw)) {
+          showErr('QR code non détecté', 'La photo est floue ou mal cadrée. Rapprochez-vous du QR code ou tapez directement le code de votre carte.', 7000);
+        }
+      };
+      img.src = rev.target.result;
+    };
+    reader.readAsDataURL(file);
+    qrCapture.value = '';
+  });
+}
+
+// Clic sur "Scanner le QR code"
+var scanBtn = document.getElementById('scanBtn');
+if (scanBtn) {
+  scanBtn.addEventListener('click', async function () {
+    var hasUserMedia = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.isSecureContext);
+    if (!hasUserMedia) {
+      // Déclenche l'appareil photo natif du smartphone
+      if (qrCapture) qrCapture.click();
+      return;
+    }
+
+    // Si flux vidéo live supporté (ex: contexte sécurisé ou desktop)
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({video: {facingMode: 'environment'}});
+      var wrap = document.getElementById('camWrap');
+      var video = document.getElementById('cam');
+      wrap.classList.add('on');
+      video.srcObject = stream;
+      await video.play();
+
+      var canvas = document.createElement('canvas');
+      var loop = function () {
+        if (!stream) return;
+        if (video.videoWidth > 0 && video.videoHeight > 0) {
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          var ctx = canvas.getContext('2d');
+          ctx.drawImage(video, 0, 0);
+          var imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          if (window.jsQR) {
+            var qr = window.jsQR(imgData.data, canvas.width, canvas.height);
+            if (qr && qr.data && processQrResult(qr.data)) return;
+          }
+        }
+        setTimeout(loop, 250);
+      };
+      loop();
+    } catch (err) {
+      // En cas de refus ou d'échec vidéo, repli sur l'appareil photo natif
+      if (qrCapture) qrCapture.click();
+    }
+  });
+}
 
 // Pré-remplissage via scan photo externe : ?c=CODE
 var params = new URLSearchParams(location.search);
@@ -433,5 +450,6 @@ if (pre) {
   setTimeout(function () { go(); }, 200);
 }
 </script>
+<script src="jsqr.min.js"></script>
 </body>
 </html>
