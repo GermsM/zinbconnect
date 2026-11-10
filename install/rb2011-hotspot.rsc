@@ -32,9 +32,9 @@
 # du telephone pendant 3 jours (ou la duree du forfait). Si l'utilisateur part
 # et revient, il est reconnecte automatiquement et son forfait continue sans ressaisie !
 :if ([:len [/ip hotspot profile find name=zinbconnect]] = 0) do={
-  /ip hotspot profile add name=zinbconnect hotspot-address=10.20.30.1 html-directory=zinbconnect login-by=http-pap,http-chap,mac-cookie,cookie mac-cookie-timeout=3d
+  /ip hotspot profile add name=zinbconnect hotspot-address=10.20.30.1 html-directory=zinbconnect login-by=http-pap,http-chap,mac-cookie,cookie http-cookie-lifetime=3d
 } else={
-  /ip hotspot profile set [find name=zinbconnect] hotspot-address=10.20.30.1 html-directory=zinbconnect login-by=http-pap,http-chap,mac-cookie,cookie mac-cookie-timeout=3d
+  /ip hotspot profile set [find name=zinbconnect] hotspot-address=10.20.30.1 html-directory=zinbconnect login-by=http-pap,http-chap,mac-cookie,cookie http-cookie-lifetime=3d
 }
 
 # ---------- 2. Serveur hotspot ----------
