@@ -45,23 +45,23 @@ Pour vous connecter au serveur Azure (`20.164.1.221`) depuis le nouveau PC, deux
 ### Méthode A (La plus rapide : copier votre ancienne clé SSH)
 Si vous avez encore votre ancien PC :
 1. Sur l'ancien PC, allez dans le dossier `C:\Users\mwang\.ssh\`
-2. Copiez les deux fichiers `id_rsa` et `id_rsa.pub` sur une clé USB.
+2. Copiez les deux fichiers `id_ed25519` et `id_ed25519.pub` sur une clé USB.
 3. Sur le nouveau PC, collez-les dans `C:\Users\VotreNom\.ssh\`
 4. Testez la connexion en ouvrant PowerShell :
    ```powershell
-   ssh -i ~/.ssh/id_rsa azureuser@20.164.1.221
+   ssh.exe azureuser@20.164.1.221
    ```
 
 ### Méthode B (Générer une nouvelle clé SSH)
 Si vous n'avez plus l'ancien PC :
 1. Dans PowerShell sur le nouveau PC, tapez :
    ```powershell
-   ssh-keygen -t rsa -b 4096
+   ssh-keygen -t ed25519
    ```
    (Appuyez sur Entrée 3 fois).
 2. Affichez votre nouvelle clé publique :
    ```powershell
-   cat ~/.ssh/id_rsa.pub
+   cat ~/.ssh/id_ed25519.pub
    ```
 3. Connectez-vous sur le **Portail Microsoft Azure** (https://portal.azure.com) :
    - Ouvrez votre machine virtuelle `vps-zinbconnect`.
@@ -99,7 +99,7 @@ PersistentKeepalive = 25
    - Dans la fenêtre WireGuard de votre PC, notez votre **Clé publique** affichée en haut.
    - Connectez-vous en SSH au VPS :
      ```bash
-     ssh -i ~/.ssh/id_rsa azureuser@20.164.1.221
+     ssh.exe azureuser@20.164.1.221
      ```
    - Éditez `/etc/wireguard/wg0.conf` :
      ```bash
@@ -140,3 +140,4 @@ Enregistrez ces liens dans les favoris du navigateur de votre nouveau PC :
 * **Espace Revendeurs** : http://20.164.1.221/reseller.php
 * **Dépôt GitHub officiel** : https://github.com/GermsM/zinbconnect
 * **Portail Azure** : https://portal.azure.com
+
