@@ -324,8 +324,11 @@ function go(ev) {
   // par RouterOS lors du rendu de la page.
   var chapId = '$(chap-id)';
   var chapChallenge = '$(chap-challenge)';
-  f.elements.password.value = chapId && chapChallenge
-    ? hexMd5(chapId + c + chapChallenge)
+  // RouterOS fournit chap-id et chap-challenge sous forme hexadécimale.
+  // Le calcul CHAP porte sur les octets décodés, pas sur les caractères
+  // ASCII de la représentation hexadécimale.
+  f.elements.password.value = /^[0-9a-f]+$/i.test(chapId) && /^[0-9a-f]+$/i.test(chapChallenge)
+    ? hexMd5(hexDecode(chapId) + c + hexDecode(chapChallenge))
     : c;
   f.submit();
   return false;
@@ -342,8 +345,10 @@ function hexMd5(str) {
   function h(x,y,z){return x^y^z;}
   function k(x,y,z){return y^(x|~z);}
   function step(fn,a,b,c,d,x,s,t){return add(rol(add(add(a,fn(b,c,d)),add(x,t)),s),b);}
-  var bytes = unescape(encodeURIComponent(str)), len = bytes.length, words = [];
-  for (var i=0;i<len;i++) words[i>>2] = (words[i>>2]||0) | (bytes.charCodeAt(i) << ((i%4)*8));
+  // CHAP manipule une chaîne d'octets. Les codes Zinbconnect sont ASCII,
+  // tandis que chap-id/challenge viennent d'hexDecode().
+  var len = str.length, words = [];
+  for (var i=0;i<len;i++) words[i>>2] = (words[i>>2]||0) | ((str.charCodeAt(i) & 255) << ((i%4)*8));
   words[len>>2] = (words[len>>2]||0) | (0x80 << ((len%4)*8));
   words[(((len+8)>>6)+1)*16-2] = len*8;
   var a=0x67452301,b=0xefcdab89,c=0x98badcfe,d=0x10325476;
@@ -361,6 +366,14 @@ function hexMd5(str) {
   }
   var out='', vals=[a,b,c,d];
   for(i=0;i<vals.length;i++) for(var j=0;j<4;j++) out += ('0'+((vals[i]>>>(j*8))&255).toString(16)).slice(-2);
+  return out;
+}
+
+function hexDecode(hex) {
+  var out = '';
+  for (var i = 0; i + 1 < hex.length; i += 2) {
+    out += String.fromCharCode(parseInt(hex.substr(i, 2), 16));
+  }
   return out;
 }
 
