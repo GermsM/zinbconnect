@@ -8,6 +8,13 @@ Ce guide explique pas à pas comment interconnecter et paramétrer l'antenne ext
 
 ### A. Câblage et alimentation PoE 24 V (Port ETH10)
 - **Principe** : Le port **ETH10** du MikroTik RB2011 est configuré en `poe-out=forced-on`. Il délivre directement du courant continu 24 V passif sur le câble réseau.
+- **Essai sur table** : l'EAP225 peut aussi être relié temporairement à
+  `ETH2`, `ETH3` ou `ETH4` si son injecteur PoE/adaptateur secteur TP-Link est
+  utilisé. Ces ports appartiennent au bridge `lan` et le hotspot fonctionne de
+  la même manière ; dans ce cas, l'alimentation ne vient pas du RB2011.
+- **Installation finale recommandée** : utiliser `ETH10` uniquement si le
+  câble et l'EAP sont alimentés par le PoE passif 24 V du RB2011 ; vérifier
+  alors `poe-out=forced-on` et le drapeau `R` sur `eth-ap`.
 - **Raccordement** :
   - Relie un câble Ethernet direct (catégorie 5e ou 6 blindé pour extérieur) entre le port **ETH10** du MikroTik et le port **Ethernet/PoE** situé sous le capot étanche de l'EAP225.
   - **Important** : Tu n'as **PAS besoin de l'injecteur d'alimentation noir TP-Link**. Le RB2011 alimente l'antenne tout seul. Cela économise une prise électrique et réduit le risque de panne.
