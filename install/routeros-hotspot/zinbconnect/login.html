@@ -151,11 +151,15 @@ details li { margin-bottom: 7px; }
 
   <main>
     <section class="card">
+      <form name="sendin" action="$(link-login-only)" method="post">
+        <input type="hidden" name="username" value="">
+        <input type="hidden" name="password" value="">
+        <input type="hidden" name="dst" value="$(link-orig)">
+        <input type="hidden" name="popup" value="false">
+      </form>
       <form name="login" action="$(link-login-only)" method="post" accept-charset="utf-8" onsubmit="return go(event);">
         <input type="hidden" name="dst" value="$(link-orig)">
         <input type="hidden" name="popup" value="false">
-        <input type="hidden" name="username" value="">
-        <input type="hidden" name="password" value="">
 
         <label for="code">Votre code</label>
         <input id="code" type="text" maxlength="20" autocomplete="off"
@@ -311,6 +315,7 @@ if (document.readyState === 'loading') {
 function go(ev) {
   if (ev && ev.preventDefault) { ev.preventDefault(); }
   var f = document.forms.login;
+  var send = document.forms.sendin;
   var c = _clean(document.getElementById('code').value);
   if (c.length < 6) {
     showErr('Code incomplet', 'Verifiez le code inscrit sur votre carte.');
@@ -318,7 +323,7 @@ function go(ev) {
   }
   document.getElementById('submitBtn').disabled = true;
   document.getElementById('submitBtn').textContent = 'Connexion en cours...';
-  f.elements.username.value = c;
+  send.elements.username.value = c;
   // RouterOS CHAP : le code ne doit pas etre envoye en clair sur le Wi-Fi
   // ouvert. Les variables $(chap-id) et $(chap-challenge) sont remplacees
   // par RouterOS lors du rendu de la page.
@@ -326,8 +331,8 @@ function go(ev) {
   var chapChallenge = '$(chap-challenge)';
   // Format HTTP-CHAP standard de RouterOS : le moteur hexMD5 recoit les
   // valeurs chap-id et chap-challenge telles que RouterOS les substitue.
-  f.elements.password.value = hexMd5(chapId + c + chapChallenge);
-  f.submit();
+  send.elements.password.value = hexMd5(chapId + c + chapChallenge);
+  send.submit();
   return false;
 }
 
