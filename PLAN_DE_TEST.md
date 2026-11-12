@@ -22,6 +22,9 @@ Ce document est le référentiel de validation sur banc d'essai (Bukavu) et sur 
   2. Constater l'apparition de la notification système *"Se connecter au réseau Wi-Fi"*.
   3. Taper sur la notification : la page d'accueil violette Zinbconnect s'ouvre automatiquement.
 - **Résultat attendu** : Le portail captif s'affiche en plein écran avec les logos, la liste des tarifs et le champ de saisie du code.
+- **Important** : la fenêtre captive est décidée par Android/iOS/Windows et ne
+  peut pas être garantie dans tous les cas. Si elle n'apparaît pas, ouvrir
+  manuellement `http://10.20.30.1/login.html` ou une page HTTP non chiffrée.
 
 ---
 

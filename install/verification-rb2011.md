@@ -121,10 +121,10 @@ Si `eth-ap` n'est pas **R** : câble, ou EAP non alimenté (l'adaptateur 24 V
 - côté pair : `endpoint-address` = IP de votre VPS, `persistent-keepalive: 25s`,
   et surtout **`last-handshake` de quelques secondes/minutes** — pas vide ni
   « 1h » ;
-- `10.20.40.2/24` présent.
+- `10.100.0.2/24` présent.
 
 ```
-/ping 10.20.40.1 count=4
+/ping 10.100.0.1 count=4
 ```
 
 Le VPS doit répondre. S'il ne répond pas alors que `last-handshake` est frais,
@@ -145,7 +145,7 @@ signifie que `IP_DU_VPS` / `CLE_PUBLIQUE_DU_VPS` n'ont pas été renseignés dan
 `/interface wireguard peers print` pour confirmer.
 
 **Test final, le seul qui compte** : depuis le PC de Bukavu, tunnel WireGuard
-activé, se connecter en WinBox sur **10.20.40.2**. Si ça passe, l'accès distant
+activé, se connecter en WinBox sur **10.100.0.2**. Si ça passe, l'accès distant
 fonctionne.
 
 ---
@@ -157,7 +157,7 @@ fonctionne.
 ```
 
 - `telnet`, `ftp`, `api` : drapeau **X** (désactivés) ;
-- `winbox`, `www`, `ssh` : colonne `address` = `10.20.40.0/24,10.20.50.0/24`.
+- `winbox`, `www`, `ssh` : colonne `address` = `10.100.0.0/24,10.20.50.0/24`.
   Autrement dit : le tunnel (`.40`) et le port d'administration ETH5 (`.50`),
   **jamais** `10.20.30.0/24`.
 
@@ -206,9 +206,9 @@ fonctionne.
 ```
 
 - hotspot `hotspot1` sur `lan`, profil `zinbconnect`, `enabled: yes` ;
-- profil avec `html-directory: zinbconnect` et `login-by: http-chap` ;
+- profil avec `html-directory: zinbconnect` et `login-by: http-chap,mac-cookie,cookie` ;
 - profil utilisateur `code-usable` avec `shared-users: 1` ;
-- 3 entrées de walled garden (DNS UDP, DNS TCP, ICMP) ;
+- les entrées walled garden DNS, ICMP, VPS Azure et WireGuard ;
 - le compteur d'utilisateurs doit augmenter du **nombre de codes du lot
   importé** (les codes des lots précédents restent présents, ils ne sont pas
   effacés ; seuls les codes révoqués sont retirés).

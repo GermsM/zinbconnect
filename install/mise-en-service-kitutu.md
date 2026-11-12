@@ -160,7 +160,7 @@ Copier la `public-key` de `wg-relay` dans le `wg0.conf` du VPS, côté pair
 `kitutu`, puis sur le VPS :
 
 ```
-wg set wg0 peer <clé-du-routeur> allowed-ips 10.20.40.2/32
+wg set wg0 peer <clé-du-routeur> allowed-ips 10.100.0.2/32
 wg-quick save wg0        # ou éditer wg0.conf puis systemctl restart wg-quick@wg0
 wg show
 ```
@@ -192,7 +192,7 @@ Dérouler `install/verification-rb2011.md`. Minimum vital :
    et au tunnel.
 3. Téléphone : Wi-Fi → page `zinbconnect` → code → navigation Internet.
 4. `/ip hotspot active print` montre le code connecté.
-5. WinBox depuis le tunnel (`10.20.40.2`) **depuis un autre réseau** si
+5. WinBox depuis le tunnel (`10.100.0.2`) **depuis un autre réseau** si
    possible — sinon, ce test se fait depuis Bukavu le soir même.
 6. EAP : liaison `eth-ap` avec le drapeau **R** et PoE actif.
 
@@ -255,7 +255,7 @@ gratuit.
 
 ## 7. Après le départ du site
 
-- Depuis Bukavu : WinBox sur `10.20.40.2`, tunnel activé.
+- Depuis Bukavu : WinBox sur `10.100.0.2`, tunnel activé.
 - À chaque lot vendu : export `.rsc` dans l'admin → import sur le routeur.
   Un code révoqué disparaît au réimport du lot.
 - Sauvegardes régulières : `/export file-name=hebdo` et

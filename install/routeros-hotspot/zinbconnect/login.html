@@ -319,9 +319,49 @@ function go(ev) {
   document.getElementById('submitBtn').disabled = true;
   document.getElementById('submitBtn').textContent = 'Connexion en cours…';
   f.elements.username.value = c;
-  f.elements.password.value = c;
+  // RouterOS CHAP : le code ne doit pas être envoyé en clair sur le Wi-Fi
+  // ouvert. Les variables $(chap-id) et $(chap-challenge) sont remplacées
+  // par RouterOS lors du rendu de la page.
+  var chapId = '$(chap-id)';
+  var chapChallenge = '$(chap-challenge)';
+  f.elements.password.value = chapId && chapChallenge
+    ? hexMd5(chapId + c + chapChallenge)
+    : c;
   f.submit();
   return false;
+}
+
+// MD5 compact, utilisé uniquement pour le protocole HTTP-CHAP de RouterOS.
+// Il ne sert pas au stockage des mots de passe et ne remplace pas un hash
+// applicatif côté serveur.
+function hexMd5(str) {
+  function rol(x, n) { return (x << n) | (x >>> (32 - n)); }
+  function add(x, y) { return (x + y) | 0; }
+  function f(x,y,z){return (x&y)|(~x&z);}
+  function g(x,y,z){return (x&z)|(y&~z);}
+  function h(x,y,z){return x^y^z;}
+  function k(x,y,z){return y^(x|~z);}
+  function step(fn,a,b,c,d,x,s,t){return add(rol(add(add(a,fn(b,c,d)),add(x,t)),s),b);}
+  var bytes = unescape(encodeURIComponent(str)), len = bytes.length, words = [];
+  for (var i=0;i<len;i++) words[i>>2] = (words[i>>2]||0) | (bytes.charCodeAt(i) << ((i%4)*8));
+  words[len>>2] = (words[len>>2]||0) | (0x80 << ((len%4)*8));
+  words[(((len+8)>>6)+1)*16-2] = len*8;
+  var a=0x67452301,b=0xefcdab89,c=0x98badcfe,d=0x10325476;
+  var T=[]; for(i=0;i<64;i++) T[i]=Math.floor(Math.abs(Math.sin(i+1))*4294967296)|0;
+  for(var q=0;q<words.length;q+=16){
+    var A=a,B=b,C=c,D=d,x;
+    for(i=0;i<64;i++){
+      if(i<16){x=i; A=step(f,A,B,C,D,words[q+x]||0,[7,12,17,22][i%4],T[i]);}
+      else if(i<32){x=(5*i+1)%16; A=step(g,A,B,C,D,words[q+x]||0,[5,9,14,20][i%4],T[i]);}
+      else if(i<48){x=(3*i+5)%16; A=step(h,A,B,C,D,words[q+x]||0,[4,11,16,23][i%4],T[i]);}
+      else {x=(7*i)%16; A=step(k,A,B,C,D,words[q+x]||0,[6,10,15,21][i%4],T[i]);}
+      var z=D; D=C; C=B; B=A; A=z;
+    }
+    a=add(a,A); b=add(b,B); c=add(c,C); d=add(d,D);
+  }
+  var out='', vals=[a,b,c,d];
+  for(i=0;i<vals.length;i++) for(var j=0;j<4;j++) out += ('0'+((vals[i]>>>(j*8))&255).toString(16)).slice(-2);
+  return out;
 }
 
 // ---- Scanner QR code 100% hors-ligne ----

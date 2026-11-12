@@ -20,7 +20,7 @@
 #   (10.20.30.0/24). Autoriser WinBox/SSH depuis 10.20.30.0/24 revenait donc
 #   a ouvrir l'administration du routeur a TOUS les clients du hotspot. Les
 #   services d'administration ne sont plus accessibles que par le tunnel
-#   WireGuard (10.20.40.0/24) et par ce port dedie (10.20.50.0/24).
+#   WireGuard (10.100.0.0/24) et par ce port dedie (10.20.50.0/24).
 #   Sur site, sans tunnel encore etabli, on administre via ETH5.
 #
 # Notes materiel verifie sur les fiches MikroTik / TP-Link :
@@ -111,6 +111,19 @@
   /ip dhcp-server network add address=10.20.30.0/24 gateway=10.20.30.1 dns-server=10.20.30.1 comment="Reseau clients"
 } else={
   /ip dhcp-server network set [find address="10.20.30.0/24"] gateway=10.20.30.1 dns-server=10.20.30.1
+}
+# RFC 8910 : annonce explicite du portail aux appareils qui savent exploiter
+# l'option DHCP captive-portal. Les appareils plus anciens continuent d'utiliser
+# la redirection HTTP classique de RouterOS.
+:do {
+  :if ([:len [/ip dhcp-server option find name=zinbconnect-captive]] = 0) do={
+    /ip dhcp-server option add name=zinbconnect-captive code=114 value="'http://10.20.30.1/login.html'" comment="Portail captif Zinbconnect"
+  } else={
+    /ip dhcp-server option set [find name=zinbconnect-captive] code=114 value="'http://10.20.30.1/login.html'"
+  }
+  /ip dhcp-server network set [find address="10.20.30.0/24"] dhcp-option=zinbconnect-captive
+} on-error={
+  :log warning "Captive portal DHCP option 114 non disponible sur cette version RouterOS"
 }
 
 # ---------- 5 bis. Reseau d'administration (ETH5) ----------
@@ -234,7 +247,11 @@
 :do { /ip service set [find name=telnet] disabled=yes } on-error={ }
 :do { /ip service set [find name=ftp]    disabled=yes } on-error={ }
 :do { /ip service set [find name=api]    disabled=yes } on-error={ }
-# api-ssl / www-ssl sont desactives par defaut : rien a faire.
+# Ne pas supposer que les services existent avec leur configuration par
+# defaut : une ancienne configuration peut avoir laisse l'API-SSL ouverte.
+# L'application utilise les exports .rsc et non l'API RouterOS.
+:do { /ip service set [find name=api-ssl] disabled=yes } on-error={ }
+:do { /ip service set [find name=www-ssl] disabled=yes } on-error={ }
 #
 # Acces de secours : si le tunnel tombe ET que le mot de passe admin est
 # perdu, il reste le bouton reset du RB2011 (config a reimporter). Le

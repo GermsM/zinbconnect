@@ -21,3 +21,6 @@ backups/
 
 # Notes personnelles et archives locales
 Notes/
+
+# Artefacts de contexte générés localement par l'agent
+session-*.md

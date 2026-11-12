@@ -142,19 +142,19 @@ sudo nano /etc/wireguard/wg0.conf
 
 ```
 [Interface]
-Address = 10.20.40.1/24
+Address = 10.100.0.1/24
 ListenPort = 51820
 PrivateKey = <CONTENU_DE_privatekey>
 
 # Routeur RB2011 a Kitutu (initiateur, derriere le CGNAT Starlink)
 [Peer]
 PublicKey = <CLE_PUBLIQUE_DU_ROUTEUR>
-AllowedIPs = 10.20.40.2/32
+AllowedIPs = 10.100.0.2/32
 
 # PC portable admin a Bukavu
 [Peer]
 PublicKey = <CLE_PUBLIQUE_DU_PC>
-AllowedIPs = 10.20.40.10/32
+AllowedIPs = 10.100.0.10/32
 ```
 
 Puis :
@@ -166,14 +166,14 @@ sudo systemctl enable --now wg-quick@wg0
 sudo wg show
 ```
 
-`ip -4 addr show wg0` doit montrer `10.20.40.1/24`. Tant qu'aucun pair n'a
+`ip -4 addr show wg0` doit montrer `10.100.0.1/24`. Tant qu'aucun pair n'a
 envoyé de paquet, `wg show` n'affiche aucune ligne `peer` : c'est normal.
 
 > Les clés du routeur et du PC ne sont pas encore connues à ce stade. Le plus
 > simple : ajouter le bloc `[Peer]` correspondant **plus tard**, puis
 > `sudo systemctl restart wg-quick@wg0`. Ou à chaud, sans redémarrer :
 > ```bash
-> sudo wg set wg0 peer <CLE> allowed-ips 10.20.40.2/32
+> sudo wg set wg0 peer <CLE> allowed-ips 10.100.0.2/32
 > ```
 > (à chaud, mais à reporter aussi dans `wg0.conf`, sinon perdu au redémarrage).
 
@@ -202,17 +202,17 @@ qu'un CGNAT. Si le tunnel monte ici, il montera à Kitutu.
 ```
 # routeur
 /interface wireguard peers print detail     # last-handshake recent
-/ping 10.20.40.1 count=4
+/ping 10.100.0.1 count=4
 ```
 
 ```bash
 # VPS
 sudo wg show          # ligne "peer" avec latest handshake
-ping -c4 10.20.40.2
-ssh admin@10.20.40.2  # acces admin sans aucune redirection de port
+ping -c4 10.100.0.2
+ssh admin@10.100.0.2  # acces admin sans aucune redirection de port
 ```
 
-Le `ssh admin@10.20.40.2` depuis le VPS est **la preuve** que l'administration
+Le `ssh admin@10.100.0.2` depuis le VPS est **la preuve** que l'administration
 à distance fonctionne : le routeur est joignable de l'extérieur sans ouvrir un
 seul port chez Starlink.
 
@@ -229,12 +229,12 @@ routeur sera à Kitutu.
 ```
 [Interface]
 PrivateKey = <générée par l'application>
-Address = 10.20.40.10/32
+Address = 10.100.0.10/32
 
 [Peer]
 PublicKey = <CLE_PUBLIQUE_DU_VPS>
 Endpoint = IP_DU_VPS:51820
-AllowedIPs = 10.20.40.0/24
+AllowedIPs = 10.100.0.0/24
 PersistentKeepalive = 25
 ```
 
@@ -242,11 +242,11 @@ PersistentKeepalive = 25
    du VPS (pair PC) → `sudo systemctl restart wg-quick@wg0`.
 4. **Se déconnecter du Wi-Fi du routeur** et se connecter au partage 4G du
    téléphone : c'est ce qui rend le test honnête (sinon on passe par le LAN).
-5. Activer le tunnel → ouvrir WinBox → `10.20.40.2` → ça doit répondre.
+5. Activer le tunnel → ouvrir WinBox → `10.100.0.2` → ça doit répondre.
 6. Ouvrir `http://10.20.30.1` : la page du portail doit s'afficher.
 
 Si l'étape 5 échoue alors que `wg show` sur le VPS voit le PC : c'est le
-pare-feu du VPS ou l'`AllowedIPs` côté routeur (doit couvrir `10.20.40.10`).
+pare-feu du VPS ou l'`AllowedIPs` côté routeur (doit couvrir `10.100.0.10`).
 
 > Sans tunnel (test local, panne), on administre le routeur par **ETH5**
 > (`10.20.50.x`) ou par MAC-WinBox. Depuis le Wi-Fi du hotspot, WinBox et SSH

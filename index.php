@@ -213,9 +213,10 @@ footer a{color:var(--v)}
     revoked: ['Code désactivé', 'Ce code a été révoqué. Contactez votre revendeur.'],
     used: ['Déjà utilisé', 'Ce code a déjà servi. Achetez un nouveau ticket.'],
     rateLimited: ['Trop d\'essais', 'Attendez quelques minutes avant de réessayer.'],
-    csrfInvalid: ['Session expirée', 'Rechargez la page et réessayez.'],
-    empty: ['Code vide', 'Entrez le code inscrit sur votre carte.'],
-    invalidMethod: ['Erreur', 'Rechargez la page et réessayez.']
+     csrfInvalid: ['Session expirée', 'Rechargez la page et réessayez.'],
+     empty: ['Code vide', 'Entrez le code inscrit sur votre carte.'],
+     invalidMethod: ['Erreur', 'Rechargez la page et réessayez.'],
+     routerosPortal: ['Portail Wi-Fi local requis', 'Connectez-vous au Wi-Fi Zinbconnect puis ouvrez http://10.20.30.1/login.html pour utiliser votre ticket.']
   };
 
   function showError(reason) {

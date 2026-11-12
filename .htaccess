@@ -29,7 +29,9 @@ RedirectMatch 404 ^/(lib|install|data|backups|tools)(/|$)
   Header always set X-Content-Type-Options "nosniff"
   Header always set X-Frame-Options "SAMEORIGIN"
   Header always set Referrer-Policy "strict-origin-when-cross-origin"
-  Header always set Permissions-Policy "geolocation=(), microphone=(), camera=()"
+  # Le portail PHP peut proposer le scan QR dans un contexte HTTPS. La caméra
+  # reste limitée à l'origine courante ; elle n'est pas exposée aux iframes.
+  Header always set Permissions-Policy "geolocation=(), microphone=(), camera=(self)"
 </IfModule>
 
 # ------------------------------------------------------------------

@@ -21,6 +21,14 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     json_out(['valid' => false, 'reason' => 'invalidMethod'], 405);
 }
 
+// Le VPS est le plan de gestion, pas le contrôleur du trafic Wi-Fi. Tant qu'un
+// connecteur RouterOS authentifié n'est pas installé, une validation PHP seule
+// pourrait consommer un ticket sans débloquer le client. Le portail réel est
+// donc login.html, servi par le hotspot MikroTik.
+if (strtolower((string)env('PORTAL_AUTHORITY', 'routeros')) !== 'php') {
+    json_out(['valid' => false, 'reason' => 'routerosPortal'], 409);
+}
+
 $input = json_input();
 if ($input === []) {
     $input = $_POST;
