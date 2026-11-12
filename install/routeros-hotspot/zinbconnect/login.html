@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#5b21b6">
-<title>Zinbconnect — Connexion Wi-Fi</title>
+<title>Zinbconnect  Connexion Wi-Fi</title>
 <style>
 :root {
   --v: #5b21b6;
@@ -112,8 +112,8 @@ summary {
   list-style: none; display: flex; justify-content: space-between; align-items: center;
 }
 summary::-webkit-details-marker { display: none; }
-summary::after { content: "＋"; color: var(--v2); font-weight: 700; }
-details[open] summary::after { content: "−"; }
+summary::after { content: "+"; color: var(--v2); font-weight: 700; }
+details[open] summary::after { content: ""; }
 details p, details li { font-size: 14px; color: #374151; line-height: 1.5; }
 details ul { padding-left: 18px; margin: 0 0 12px; }
 details li { margin-bottom: 7px; }
@@ -145,7 +145,7 @@ details li { margin-bottom: 7px; }
     <div class="logo">Z</div>
     <div>
       <h1>Zinbconnect<span class="bars" aria-hidden="true"><i></i><i></i><i></i></span></h1>
-      <p>Wi-Fi à Kitutu — entrez votre code pour vous connecter</p>
+      <p>Wi-Fi a Kitutu  entrez votre code pour vous connecter</p>
     </div>
   </header>
 
@@ -188,44 +188,44 @@ details li { margin-bottom: 7px; }
           <strong>1 000 FC</strong>
           <em>1 heure de connexion</em>
         </div>
-        <span class="tag">Illimité</span>
+        <span class="tag">Illimite</span>
       </div>
       <div class="plan">
         <div>
           <strong>1 500 FC</strong>
           <em>12 heures de connexion</em>
         </div>
-        <span class="tag">Illimité</span>
+        <span class="tag">Illimite</span>
       </div>
       <div class="plan">
         <div>
           <strong>2 500 FC</strong>
           <em>24 heures de connexion</em>
         </div>
-        <span class="tag">Illimité</span>
+        <span class="tag">Illimite</span>
       </div>
       <div class="plan">
         <div>
           <strong>5 000 FC</strong>
           <em>3 jours de connexion</em>
         </div>
-        <span class="tag">Illimité</span>
+        <span class="tag">Illimite</span>
       </div>
     </section>
 
     <details>
-      <summary>Aide et questions fréquentes</summary>
+      <summary>Aide et questions frequentes</summary>
       <ul>
-        <li><strong>Où acheter un code ?</strong> Chez un revendeur à Kitutu, en espèces (FC).</li>
-        <li><strong>Combien de temps ?</strong> Votre forfait est illimité pendant toute sa durée : pas de compteur de données.</li>
-        <li><strong>Le temps commence quand ?</strong> À la première utilisation du code, pas à l'achat.</li>
-        <li><strong>J'ai perdu ma connexion ?</strong> Réentrez le même code : il reprend le temps restant.</li>
-        <li><strong>Le code ne passe pas ?</strong> Vérifiez les caractères : il n'y a jamais de <b>0</b>, <b>O</b>, <b>1</b>, <b>I</b> ni <b>l</b>.</li>
-        <li><strong>Un code pour deux personnes ?</strong> Non : un code ne peut pas servir deux fois en même temps.</li>
+        <li><strong>Ou acheter un code ?</strong> Chez un revendeur a Kitutu, en especes (FC).</li>
+        <li><strong>Combien de temps ?</strong> Votre forfait est illimite pendant toute sa duree : pas de compteur de donnees.</li>
+        <li><strong>Le temps commence quand ?</strong> A la premiere utilisation du code, pas a l'achat.</li>
+        <li><strong>J'ai perdu ma connexion ?</strong> Reentrez le meme code : il reprend le temps restant.</li>
+        <li><strong>Le code ne passe pas ?</strong> Verifiez les caracteres : il n'y a jamais de <b>0</b>, <b>O</b>, <b>1</b>, <b>I</b> ni <b>l</b>.</li>
+        <li><strong>Un code pour deux personnes ?</strong> Non : un code ne peut pas servir deux fois en meme temps.</li>
       </ul>
     </details>
 
-    <p class="hint" style="text-align:center;margin-top:10px">Une connexion lente ? Cette page reste légère pour fonctionner partout.</p>
+    <p class="hint" style="text-align:center;margin-top:10px">Une connexion lente ? Cette page reste legere pour fonctionner partout.</p>
   </main>
 
   <footer class="contact-section">
@@ -240,7 +240,7 @@ details li { margin-bottom: 7px; }
         <span>mwangugermain33@gmail.com</span>
       </a>
     </div>
-    <div class="brand-sub">Zinbconnect · Wi-Fi Haut Débit Kitutu</div>
+    <div class="brand-sub">Zinbconnect  Wi-Fi Haut Debit Kitutu</div>
   </footer>
 </div>
 
@@ -276,21 +276,21 @@ function humanizeError() {
   var raw = (box.innerText || box.textContent || '').toLowerCase();
 
   if (raw.indexOf('invalid username or password') !== -1 || raw.indexOf('invalid') !== -1) {
-    box.innerHTML = '<b>Code invalide ou inexistant</b>Ce code de ticket n\'existe pas. Vérifiez bien les 12 caractères inscrits sur votre carte (il n\'y a jamais de 0, O, 1, I ou l).';
+    box.innerHTML = '<b>Code invalide ou inexistant</b>Ce code de ticket n\'existe pas. Verifiez bien les 12 caracteres inscrits sur votre carte (il n\'y a jamais de 0, O, 1, I ou l).';
   } else if (raw.indexOf('already logged in') !== -1) {
-    box.innerHTML = '<b>Appareil déjà connecté</b>Ce ticket est déjà en cours d\'utilisation sur un autre appareil. Un seul appareil à la fois peut naviguer.';
+    box.innerHTML = '<b>Appareil deja connecte</b>Ce ticket est deja en cours d\'utilisation sur un autre appareil. Un seul appareil a la fois peut naviguer.';
   } else if (raw.indexOf('uptime limit') !== -1 || raw.indexOf('limit-uptime') !== -1) {
-    box.innerHTML = '<b>Forfait expiré</b>La durée de votre ticket est terminée. Achetez une nouvelle carte auprès d\'un revendeur.';
+    box.innerHTML = '<b>Forfait expire</b>La duree de votre ticket est terminee. Achetez une nouvelle carte aupres d\'un revendeur.';
   } else if (raw.indexOf('traffic limit') !== -1 || raw.indexOf('limit-bytes') !== -1 || raw.indexOf('transfer limit') !== -1) {
-    box.innerHTML = '<b>Quota de données atteint</b>Le volume de données autorisé pour ce forfait est consommé.';
+    box.innerHTML = '<b>Quota de donnees atteint</b>Le volume de donnees autorise pour ce forfait est consomme.';
   } else if (raw.indexOf('not responding') !== -1) {
-    box.innerHTML = '<b>Serveur momentanément indisponible</b>Veuillez patienter quelques instants et réessayer.';
+    box.innerHTML = '<b>Serveur momentanement indisponible</b>Veuillez patienter quelques instants et reessayer.';
   }
 
   dismissAfter(box, 5000);
 }
 
-// Estomper immédiatement dès que l'utilisateur commence à retaper son code
+// Estomper immediatement des que l'utilisateur commence a retaper son code
 var codeInput = document.getElementById('code');
 if (codeInput) {
   codeInput.addEventListener('input', function () {
@@ -301,7 +301,7 @@ if (codeInput) {
   });
 }
 
-// Exécuter l'humanisation dès le chargement de la page
+// Executer l'humanisation des le chargement de la page
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', humanizeError);
 } else {
@@ -313,30 +313,27 @@ function go(ev) {
   var f = document.forms.login;
   var c = _clean(document.getElementById('code').value);
   if (c.length < 6) {
-    showErr('Code incomplet', 'Vérifiez le code inscrit sur votre carte.');
+    showErr('Code incomplet', 'Verifiez le code inscrit sur votre carte.');
     return false;
   }
   document.getElementById('submitBtn').disabled = true;
-  document.getElementById('submitBtn').textContent = 'Connexion en cours…';
+  document.getElementById('submitBtn').textContent = 'Connexion en cours...';
   f.elements.username.value = c;
-  // RouterOS CHAP : le code ne doit pas être envoyé en clair sur le Wi-Fi
-  // ouvert. Les variables $(chap-id) et $(chap-challenge) sont remplacées
+  // RouterOS CHAP : le code ne doit pas etre envoye en clair sur le Wi-Fi
+  // ouvert. Les variables $(chap-id) et $(chap-challenge) sont remplacees
   // par RouterOS lors du rendu de la page.
   var chapId = '$(chap-id)';
   var chapChallenge = '$(chap-challenge)';
-  // RouterOS fournit chap-id et chap-challenge sous forme hexadécimale.
-  // Le calcul CHAP porte sur les octets décodés, pas sur les caractères
-  // ASCII de la représentation hexadécimale.
-  f.elements.password.value = /^[0-9a-f]+$/i.test(chapId) && /^[0-9a-f]+$/i.test(chapChallenge)
-    ? hexMd5(hexDecode(chapId) + c + hexDecode(chapChallenge))
-    : c;
+  // Format HTTP-CHAP standard de RouterOS : le moteur hexMD5 recoit les
+  // valeurs chap-id et chap-challenge telles que RouterOS les substitue.
+  f.elements.password.value = hexMd5(chapId + c + chapChallenge);
   f.submit();
   return false;
 }
 
-// MD5 compact, utilisé uniquement pour le protocole HTTP-CHAP de RouterOS.
+// MD5 compact, utilise uniquement pour le protocole HTTP-CHAP de RouterOS.
 // Il ne sert pas au stockage des mots de passe et ne remplace pas un hash
-// applicatif côté serveur.
+// applicatif cote serveur.
 function hexMd5(str) {
   function rol(x, n) { return (x << n) | (x >>> (32 - n)); }
   function add(x, y) { return (x + y) | 0; }
@@ -345,10 +342,8 @@ function hexMd5(str) {
   function h(x,y,z){return x^y^z;}
   function k(x,y,z){return y^(x|~z);}
   function step(fn,a,b,c,d,x,s,t){return add(rol(add(add(a,fn(b,c,d)),add(x,t)),s),b);}
-  // CHAP manipule une chaîne d'octets. Les codes Zinbconnect sont ASCII,
-  // tandis que chap-id/challenge viennent d'hexDecode().
-  var len = str.length, words = [];
-  for (var i=0;i<len;i++) words[i>>2] = (words[i>>2]||0) | ((str.charCodeAt(i) & 255) << ((i%4)*8));
+  var bytes = unescape(encodeURIComponent(str)), len = bytes.length, words = [];
+  for (var i=0;i<len;i++) words[i>>2] = (words[i>>2]||0) | (bytes.charCodeAt(i) << ((i%4)*8));
   words[len>>2] = (words[len>>2]||0) | (0x80 << ((len%4)*8));
   words[(((len+8)>>6)+1)*16-2] = len*8;
   var a=0x67452301,b=0xefcdab89,c=0x98badcfe,d=0x10325476;
@@ -366,14 +361,6 @@ function hexMd5(str) {
   }
   var out='', vals=[a,b,c,d];
   for(i=0;i<vals.length;i++) for(var j=0;j<4;j++) out += ('0'+((vals[i]>>>(j*8))&255).toString(16)).slice(-2);
-  return out;
-}
-
-function hexDecode(hex) {
-  var out = '';
-  for (var i = 0; i + 1 < hex.length; i += 2) {
-    out += String.fromCharCode(parseInt(hex.substr(i, 2), 16));
-  }
   return out;
 }
 
@@ -441,7 +428,7 @@ if (qrCapture) {
       img.onload = function () {
         var raw = decodeImage(img);
         if (!processQrResult(raw)) {
-          showErr('QR code non détecté', 'La photo est floue ou mal cadrée. Rapprochez-vous du QR code ou tapez directement le code de votre carte.', 7000);
+          showErr('QR code non detecte', 'La photo est floue ou mal cadree. Rapprochez-vous du QR code ou tapez directement le code de votre carte.', 7000);
         }
       };
       img.src = rev.target.result;
@@ -457,12 +444,12 @@ if (scanBtn) {
   scanBtn.addEventListener('click', async function () {
     var hasUserMedia = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.isSecureContext);
     if (!hasUserMedia) {
-      // Déclenche l'appareil photo natif du smartphone
+      // Declenche l'appareil photo natif du smartphone
       if (qrCapture) qrCapture.click();
       return;
     }
 
-    // Si flux vidéo live supporté (ex: contexte sécurisé ou desktop)
+    // Si flux video live supporte (ex: contexte securise ou desktop)
     try {
       stream = await navigator.mediaDevices.getUserMedia({video: {facingMode: 'environment'}});
       var wrap = document.getElementById('camWrap');
@@ -489,13 +476,13 @@ if (scanBtn) {
       };
       loop();
     } catch (err) {
-      // En cas de refus ou d'échec vidéo, repli sur l'appareil photo natif
+      // En cas de refus ou d'echec video, repli sur l'appareil photo natif
       if (qrCapture) qrCapture.click();
     }
   });
 }
 
-// Pré-remplissage via scan photo externe : ?c=CODE
+// Pre-remplissage via scan photo externe : ?c=CODE
 var params = new URLSearchParams(location.search);
 var pre = params.get('c');
 if (pre) {
