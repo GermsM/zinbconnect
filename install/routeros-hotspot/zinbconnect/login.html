@@ -2,9 +2,12 @@
 <html lang="fr">
 <head>
 <meta charset="utf-8">
+<meta http-equiv="pragma" content="no-cache">
+<meta http-equiv="expires" content="-1">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#5b21b6">
-<title>Zinbconnect  Connexion Wi-Fi</title>
+<title>Zinbconnect - Connexion Wi-Fi</title>
+<script src="jsqr.min.js"></script>
 <style>
 :root {
   --v: #5b21b6;
@@ -86,6 +89,12 @@ button.ghost {
   box-shadow: none; font-size: 15.5px; margin-top: 10px;
 }
 button.ghost:active { transform: scale(.99); }
+.small-ghost {
+  font-size: 13.5px; padding: 9px 12px; margin-top: 6px; width: auto; display: inline-block;
+}
+
+.scan-box { margin-top: 10px; text-align: center; }
+.qr-file-row { margin-top: 4px; font-size: 13px; color: var(--muted); }
 
 .hint { font-size: 12.5px; color: var(--muted); margin-top: 8px; }
 .msg { margin-top: 14px; padding: 14px; border-radius: 12px; font-size: 15px; display: none; animation: rise .25s ease both; }
@@ -113,7 +122,7 @@ summary {
 }
 summary::-webkit-details-marker { display: none; }
 summary::after { content: "+"; color: var(--v2); font-weight: 700; }
-details[open] summary::after { content: ""; }
+details[open] summary::after { content: "-"; }
 details p, details li { font-size: 14px; color: #374151; line-height: 1.5; }
 details ul { padding-left: 18px; margin: 0 0 12px; }
 details li { margin-bottom: 7px; }
@@ -130,7 +139,7 @@ details li { margin-bottom: 7px; }
 #camWrap { display: none; margin-top: 12px; border-radius: 14px; overflow: hidden; background: #000; position: relative; }
 #camWrap.on { display: block; animation: rise .25s ease both; }
 #cam { width: 100%; display: block; max-height: 60vh; object-fit: cover; }
-#camHint { position: absolute; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,.55); color: #fff; font-size: 12.5px; padding: 8px 10px; text-align: center; }
+#camHint { position: absolute; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,.65); color: #fff; font-size: 12.5px; padding: 8px 10px; text-align: center; }
 
 @keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
 @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
@@ -145,29 +154,43 @@ details li { margin-bottom: 7px; }
     <div class="logo">Z</div>
     <div>
       <h1>Zinbconnect<span class="bars" aria-hidden="true"><i></i><i></i><i></i></span></h1>
-      <p>Wi-Fi a Kitutu  entrez votre code pour vous connecter</p>
+      <p>Wi-Fi a Kitutu - entrez votre code pour vous connecter</p>
     </div>
   </header>
 
   <main>
     <section class="card">
-      <form name="sendin" action="$(link-login-only)" method="post">
+      $(if chap-id)
+      <form name="sendin" action="$(link-login-only)" method="post" style="display:none">
         <input type="hidden" name="username" value="">
         <input type="hidden" name="password" value="">
         <input type="hidden" name="dst" value="$(link-orig)">
         <input type="hidden" name="popup" value="false">
       </form>
+      $(endif)
+
       <form name="login" action="$(link-login-only)" method="post" accept-charset="utf-8" onsubmit="return go(event);">
         <input type="hidden" name="dst" value="$(link-orig)">
         <input type="hidden" name="popup" value="false">
+        <input type="hidden" name="username" value="">
+        <input type="hidden" name="password" value="">
 
         <label for="code">Votre code</label>
         <input id="code" type="text" maxlength="20" autocomplete="off"
                autocapitalize="characters" spellcheck="false" inputmode="text"
                placeholder="EX : K7M2PQRS9TUV" required>
         <button id="submitBtn" type="submit">Se connecter</button>
-        <button id="scanBtn" class="ghost" type="button">Scanner le QR code</button>
+
+        <div class="scan-box">
+          <button id="scanBtn" class="ghost" type="button">Scanner le QR code</button>
+          <div class="qr-file-row">
+            <span>Une photo existante ? </span>
+            <button id="choosePhotoBtn" class="ghost small-ghost" type="button">Choisir dans la galerie</button>
+          </div>
+        </div>
+
         <input type="file" id="qrCapture" accept="image/*" capture="environment" style="display:none">
+        <input type="file" id="qrFile" accept="image/*" style="display:none">
         <p class="hint">Le code figure sur votre carte. Il n'y a jamais de 0, O, 1, I ou l.</p>
       </form>
 
@@ -244,7 +267,7 @@ details li { margin-bottom: 7px; }
         <span>mwangugermain33@gmail.com</span>
       </a>
     </div>
-    <div class="brand-sub">Zinbconnect  Wi-Fi Haut Debit Kitutu</div>
+    <div class="brand-sub">Zinbconnect - Wi-Fi Haut Debit Kitutu</div>
   </footer>
 </div>
 
@@ -263,6 +286,16 @@ function showErr(title, txt, delay) {
   dismissAfter(b, delay || 5000);
 }
 
+function showOk(title, txt, delay) {
+  var b = document.getElementById('jsMsg');
+  b.className = 'msg ok show';
+  b.style.display = 'block';
+  b.style.opacity = '1';
+  b.style.transform = 'none';
+  b.innerHTML = '<b>' + title + '</b>' + txt;
+  dismissAfter(b, delay || 5000);
+}
+
 function dismissAfter(el, delay) {
   if (!el) return;
   setTimeout(function () {
@@ -273,7 +306,7 @@ function dismissAfter(el, delay) {
   }, delay);
 }
 
-// ---- Traduction et humanisation des messages d'erreur RouterOS ----
+// Traduction et humanisation des messages d'erreur RouterOS
 function humanizeError() {
   var box = document.getElementById('message');
   if (!box) return;
@@ -287,6 +320,8 @@ function humanizeError() {
     box.innerHTML = '<b>Forfait expire</b>La duree de votre ticket est terminee. Achetez une nouvelle carte aupres d\'un revendeur.';
   } else if (raw.indexOf('traffic limit') !== -1 || raw.indexOf('limit-bytes') !== -1 || raw.indexOf('transfer limit') !== -1) {
     box.innerHTML = '<b>Quota de donnees atteint</b>Le volume de donnees autorise pour ce forfait est consomme.';
+  } else if (raw.indexOf('challenge') !== -1) {
+    box.innerHTML = '<b>Session actualisee</b>Veuillez taper votre code a nouveau et valider.';
   } else if (raw.indexOf('not responding') !== -1) {
     box.innerHTML = '<b>Serveur momentanement indisponible</b>Veuillez patienter quelques instants et reessayer.';
   }
@@ -294,7 +329,6 @@ function humanizeError() {
   dismissAfter(box, 5000);
 }
 
-// Estomper immediatement des que l'utilisateur commence a retaper son code
 var codeInput = document.getElementById('code');
 if (codeInput) {
   codeInput.addEventListener('input', function () {
@@ -305,7 +339,6 @@ if (codeInput) {
   });
 }
 
-// Executer l'humanisation des le chargement de la page
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', humanizeError);
 } else {
@@ -314,8 +347,6 @@ if (document.readyState === 'loading') {
 
 function go(ev) {
   if (ev && ev.preventDefault) { ev.preventDefault(); }
-  var f = document.forms.login;
-  var send = document.forms.sendin;
   var c = _clean(document.getElementById('code').value);
   if (c.length < 6) {
     showErr('Code incomplet', 'Verifiez le code inscrit sur votre carte.');
@@ -323,138 +354,180 @@ function go(ev) {
   }
   document.getElementById('submitBtn').disabled = true;
   document.getElementById('submitBtn').textContent = 'Connexion en cours...';
-  send.elements.username.value = c;
-  // RouterOS CHAP : le code ne doit pas etre envoye en clair sur le Wi-Fi
-  // ouvert. Les variables $(chap-id) et $(chap-challenge) sont remplacees
-  // par RouterOS lors du rendu de la page.
-  var chapId = '$(chap-id)';
-  var chapChallenge = '$(chap-challenge)';
-  // Format HTTP-CHAP standard de RouterOS : le moteur hexMD5 recoit les
-  // valeurs chap-id et chap-challenge telles que RouterOS les substitue.
-  send.elements.password.value = hexMd5(chapId + c + chapChallenge);
-  send.submit();
+
+  var send = document.forms.sendin;
+  if (send) {
+    // Protocole RouterOS HTTP-CHAP standard
+    send.elements.username.value = c;
+    var chapId = '$(chap-id)';
+    var chapChallenge = '$(chap-challenge)';
+    send.elements.password.value = hexMd5(chapId + c + chapChallenge);
+    send.submit();
+  } else {
+    // Repli direct PAP (si le profil hotspot est en PAP)
+    var f = document.forms.login;
+    f.elements.username.value = c;
+    f.elements.password.value = c;
+    f.submit();
+  }
   return false;
 }
 
-// MD5 compact, utilise uniquement pour le protocole HTTP-CHAP de RouterOS.
-// Il ne sert pas au stockage des mots de passe et ne remplace pas un hash
-// applicatif cote serveur.
+// MD5 RFC 1321 conforme RouterOS (Paul Johnston / MikroTik md5.js)
+// Fonctionne directement sur octets binaires sans corruption UTF-8.
 function hexMd5(str) {
   function rol(x, n) { return (x << n) | (x >>> (32 - n)); }
   function add(x, y) { return (x + y) | 0; }
-  function f(x,y,z){return (x&y)|(~x&z);}
-  function g(x,y,z){return (x&z)|(y&~z);}
-  function h(x,y,z){return x^y^z;}
-  function k(x,y,z){return y^(x|~z);}
-  function step(fn,a,b,c,d,x,s,t){return add(rol(add(add(a,fn(b,c,d)),add(x,t)),s),b);}
-  var bytes = unescape(encodeURIComponent(str)), len = bytes.length, words = [];
-  for (var i=0;i<len;i++) words[i>>2] = (words[i>>2]||0) | (bytes.charCodeAt(i) << ((i%4)*8));
-  words[len>>2] = (words[len>>2]||0) | (0x80 << ((len%4)*8));
-  words[(((len+8)>>6)+1)*16-2] = len*8;
-  var a=0x67452301,b=0xefcdab89,c=0x98badcfe,d=0x10325476;
-  var T=[]; for(i=0;i<64;i++) T[i]=Math.floor(Math.abs(Math.sin(i+1))*4294967296)|0;
-  for(var q=0;q<words.length;q+=16){
-    var A=a,B=b,C=c,D=d,x;
-    for(i=0;i<64;i++){
-      if(i<16){x=i; A=step(f,A,B,C,D,words[q+x]||0,[7,12,17,22][i%4],T[i]);}
-      else if(i<32){x=(5*i+1)%16; A=step(g,A,B,C,D,words[q+x]||0,[5,9,14,20][i%4],T[i]);}
-      else if(i<48){x=(3*i+5)%16; A=step(h,A,B,C,D,words[q+x]||0,[4,11,16,23][i%4],T[i]);}
-      else {x=(7*i)%16; A=step(k,A,B,C,D,words[q+x]||0,[6,10,15,21][i%4],T[i]);}
-      var z=D; D=C; C=B; B=A; A=z;
-    }
-    a=add(a,A); b=add(b,B); c=add(c,C); d=add(d,D);
+  function f(x, y, z) { return (x & y) | (~x & z); }
+  function g(x, y, z) { return (x & z) | (y & ~z); }
+  function h(x, y, z) { return x ^ y ^ z; }
+  function k(x, y, z) { return y ^ (x | ~z); }
+  function step(fn, a, b, c, d, x, s, t) { return add(rol(add(add(a, fn(b, c, d)), add(x, t)), s), b); }
+
+  var len = str.length, words = [];
+  for (var i = 0; i < len; i++) {
+    words[i >> 2] = (words[i >> 2] || 0) | ((str.charCodeAt(i) & 255) << ((i % 4) * 8));
   }
-  var out='', vals=[a,b,c,d];
-  for(i=0;i<vals.length;i++) for(var j=0;j<4;j++) out += ('0'+((vals[i]>>>(j*8))&255).toString(16)).slice(-2);
+  words[len >> 2] = (words[len >> 2] || 0) | (0x80 << ((len % 4) * 8));
+  words[(((len + 8) >> 6) + 1) * 16 - 2] = len * 8;
+
+  var a = 0x67452301, b = 0xefcdab89, c = 0x98badcfe, d = 0x10325476;
+  var T = [];
+  for (i = 0; i < 64; i++) T[i] = Math.floor(Math.abs(Math.sin(i + 1)) * 4294967296) | 0;
+
+  for (var q = 0; q < words.length; q += 16) {
+    var A = a, B = b, C = c, D = d, x;
+    for (i = 0; i < 64; i++) {
+      if (i < 16) { x = i; A = step(f, A, B, C, D, words[q + x] || 0, [7, 12, 17, 22][i % 4], T[i]); }
+      else if (i < 32) { x = (5 * i + 1) % 16; A = step(g, A, B, C, D, words[q + x] || 0, [5, 9, 14, 20][i % 4], T[i]); }
+      else if (i < 48) { x = (3 * i + 5) % 16; A = step(h, A, B, C, D, words[q + x] || 0, [4, 11, 16, 23][i % 4], T[i]); }
+      else { x = (7 * i) % 16; A = step(k, A, B, C, D, words[q + x] || 0, [6, 10, 15, 21][i % 4], T[i]); }
+      var z = D; D = C; C = B; B = A; A = z;
+    }
+    a = add(a, A); b = add(b, B); c = add(c, C); d = add(d, D);
+  }
+  var out = '', vals = [a, b, c, d];
+  for (i = 0; i < vals.length; i++) {
+    for (var j = 0; j < 4; j++) out += ('0' + ((vals[i] >>> (j * 8)) & 255).toString(16)).slice(-2);
+  }
   return out;
 }
 
-// ---- Scanner QR code 100% hors-ligne ----
+// Scanner QR code hors-ligne avec repli universel
 var stream = null;
 function stopCamera() {
-  if (stream) { stream.getTracks().forEach(function (t) { t.stop(); }); stream = null; }
+  if (stream) {
+    try {
+      stream.getTracks().forEach(function (t) { t.stop(); });
+    } catch (e) {}
+    stream = null;
+  }
   var wrap = document.getElementById('camWrap');
   if (wrap) wrap.classList.remove('on');
 }
 
 function decodeImage(img) {
+  if (!window.jsQR) return null;
   var canvas = document.createElement('canvas');
-  var maxDim = 1000;
+  var ctx = canvas.getContext('2d');
+
+  // Etape 1 : image globale redimensionnee (max 1200px)
+  var maxDim = 1200;
   var w = img.width, h = img.height;
   if (w > maxDim || h > maxDim) {
     if (w > h) { h = Math.round(h * maxDim / w); w = maxDim; }
     else { w = Math.round(w * maxDim / h); h = maxDim; }
   }
   canvas.width = w; canvas.height = h;
-  var ctx = canvas.getContext('2d');
   ctx.drawImage(img, 0, 0, w, h);
-  var imgData = ctx.getImageData(0, 0, w, h);
+  try {
+    var imgData = ctx.getImageData(0, 0, w, h);
+    var res = window.jsQR(imgData.data, w, h, { inversionAttempts: "attemptBoth" });
+    if (res && res.data) return res.data;
+  } catch (e) {}
 
-  var raw = null;
-  if (window.jsQR) {
+  // Etape 2 : crop central a 60%
+  if (img.width > 300 && img.height > 300) {
+    var cw = Math.round(img.width * 0.6);
+    var ch = Math.round(img.height * 0.6);
+    var sx = Math.round((img.width - cw) / 2);
+    var sy = Math.round((img.height - ch) / 2);
+    canvas.width = cw; canvas.height = ch;
+    ctx.drawImage(img, sx, sy, cw, ch, 0, 0, cw, ch);
     try {
-      var res = window.jsQR(imgData.data, w, h, { inversionAttempts: "dontInvert" });
-      if (!res) res = window.jsQR(imgData.data, w, h, { inversionAttempts: "onlyInvert" });
-      if (res && res.data) raw = res.data;
+      var cropData = ctx.getImageData(0, 0, cw, ch);
+      res = window.jsQR(cropData.data, cw, ch, { inversionAttempts: "attemptBoth" });
+      if (res && res.data) return res.data;
     } catch (e) {}
   }
-  return raw;
+  return null;
 }
 
 function processQrResult(raw) {
   if (!raw) return false;
-  var code = raw;
+  var code = String(raw).trim();
   try {
-    var u = new URL(raw);
-    code = u.searchParams.get('c') || raw;
-  } catch (e) {
-    var m = String(raw).match(/[?&]c=([A-Za-z0-9]+)/);
-    if (m) code = m[1];
-  }
+    var u = new URL(code);
+    var param = u.searchParams.get('c');
+    if (param) code = param;
+  } catch (e) {}
+  var m = code.match(/[?&]c=([A-Za-z0-9]+)/);
+  if (m) code = m[1];
+
   var clean = _clean(code);
   if (clean.length >= 6) {
     stopCamera();
     document.getElementById('code').value = clean;
-    go();
+    showOk('QR code detecte !', 'Code : ' + clean + ' - Connexion...', 3000);
+    setTimeout(function () { go(); }, 400);
     return true;
   }
   return false;
 }
 
-// Gestion de la capture photo native (fonctionne sur tout smartphone en HTTP)
-var qrCapture = document.getElementById('qrCapture');
-if (qrCapture) {
-  qrCapture.addEventListener('change', function (e) {
-    var file = e.target.files && e.target.files[0];
-    if (!file) return;
-    var reader = new FileReader();
-    reader.onload = function (rev) {
-      var img = new Image();
-      img.onload = function () {
-        var raw = decodeImage(img);
-        if (!processQrResult(raw)) {
-          showErr('QR code non detecte', 'La photo est floue ou mal cadree. Rapprochez-vous du QR code ou tapez directement le code de votre carte.', 7000);
-        }
-      };
-      img.src = rev.target.result;
+function handleFileInput(e) {
+  var file = e.target.files && e.target.files[0];
+  if (!file) return;
+  var reader = new FileReader();
+  reader.onload = function (rev) {
+    var img = new Image();
+    img.onload = function () {
+      var raw = decodeImage(img);
+      if (!processQrResult(raw)) {
+        showErr('QR code non detecte', 'La photo est floue ou le QR code n\'est pas net. Cadrez la carte au centre et reessayez, ou tapez directement le code de votre carte.', 7000);
+      }
     };
-    reader.readAsDataURL(file);
-    qrCapture.value = '';
+    img.src = rev.target.result;
+  };
+  reader.readAsDataURL(file);
+  e.target.value = '';
+}
+
+var qrCapture = document.getElementById('qrCapture');
+if (qrCapture) { qrCapture.addEventListener('change', handleFileInput); }
+
+var qrFile = document.getElementById('qrFile');
+if (qrFile) { qrFile.addEventListener('change', handleFileInput); }
+
+var choosePhotoBtn = document.getElementById('choosePhotoBtn');
+if (choosePhotoBtn) {
+  choosePhotoBtn.addEventListener('click', function () {
+    if (qrFile) qrFile.click();
   });
 }
 
-// Clic sur "Scanner le QR code"
 var scanBtn = document.getElementById('scanBtn');
 if (scanBtn) {
   scanBtn.addEventListener('click', async function () {
-    var hasUserMedia = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.isSecureContext);
+    var isHttps = (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1');
+    var hasUserMedia = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && isHttps);
+
     if (!hasUserMedia) {
-      // Declenche l'appareil photo natif du smartphone
+      // Contexte HTTP (ex: 10.20.30.1) : declenchement appareil photo natif
       if (qrCapture) qrCapture.click();
       return;
     }
 
-    // Si flux video live supporte (ex: contexte securise ou desktop)
     try {
       stream = await navigator.mediaDevices.getUserMedia({video: {facingMode: 'environment'}});
       var wrap = document.getElementById('camWrap');
@@ -481,20 +554,28 @@ if (scanBtn) {
       };
       loop();
     } catch (err) {
-      // En cas de refus ou d'echec video, repli sur l'appareil photo natif
       if (qrCapture) qrCapture.click();
     }
   });
 }
 
-// Pre-remplissage via scan photo externe : ?c=CODE
-var params = new URLSearchParams(location.search);
-var pre = params.get('c');
-if (pre) {
-  document.getElementById('code').value = _clean(pre);
-  setTimeout(function () { go(); }, 200);
+// Lecture URL externe : ?c=CODE
+var preCode = '';
+try {
+  var urlParams = new URLSearchParams(window.location.search);
+  preCode = urlParams.get('c') || '';
+} catch (e) {}
+if (!preCode) {
+  var match = window.location.search.match(/[?&]c=([A-Za-z0-9]+)/);
+  if (match) preCode = match[1];
+}
+if (preCode) {
+  var cClean = _clean(preCode);
+  if (cClean.length >= 6) {
+    document.getElementById('code').value = cClean;
+    setTimeout(function () { go(); }, 200);
+  }
 }
 </script>
-<script src="jsqr.min.js"></script>
 </body>
 </html>
