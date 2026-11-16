@@ -84,13 +84,29 @@ button {
 }
 button:active { transform: scale(.985); box-shadow: 0 3px 8px rgba(91,33,182,.22); }
 button:disabled { opacity: .6; }
-button.ghost {
+button.ghost, label.ghost {
   background: #f5f3ff; color: var(--v); border: 1.5px solid #ddd6fe;
   box-shadow: none; font-size: 15.5px; margin-top: 10px;
+  display: block; width: 100%; box-sizing: border-box; text-align: center;
+  cursor: pointer; padding: 13px 16px; border-radius: 12px; font-weight: 600;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
 }
-button.ghost:active { transform: scale(.99); }
+button.ghost:active, label.ghost:active { transform: scale(.99); }
 .small-ghost {
-  font-size: 13.5px; padding: 9px 12px; margin-top: 6px; width: auto; display: inline-block;
+  font-size: 13px !important; padding: 7px 12px !important; margin-top: 6px !important; width: auto !important; display: inline-block !important;
+}
+.sr-only {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+  opacity: 0 !important;
 }
 
 .scan-box { margin-top: 10px; text-align: center; }
@@ -182,15 +198,17 @@ details li { margin-bottom: 7px; }
         <button id="submitBtn" type="submit">Se connecter</button>
 
         <div class="scan-box">
-          <button id="scanBtn" class="ghost" type="button">Scanner le QR code</button>
+          <label for="qrCapture" id="scanLabel" class="ghost">
+            <svg style="vertical-align:middle;margin-right:6px;display:inline-block" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>Scanner le QR code (Photo)
+          </label>
           <div class="qr-file-row">
-            <span>Une photo existante ? </span>
-            <button id="choosePhotoBtn" class="ghost small-ghost" type="button">Choisir dans la galerie</button>
+            <span>Ou depuis une image existante : </span>
+            <label for="qrFile" id="fileLabel" class="ghost small-ghost">Choisir dans la galerie</label>
           </div>
         </div>
 
-        <input type="file" id="qrCapture" accept="image/*" capture="environment" style="display:none">
-        <input type="file" id="qrFile" accept="image/*" style="display:none">
+        <input type="file" id="qrCapture" accept="image/*" capture="environment" class="sr-only">
+        <input type="file" id="qrFile" accept="image/*" class="sr-only">
         <p class="hint">Le code figure sur votre carte. Il n'y a jamais de 0, O, 1, I ou l.</p>
       </form>
 
@@ -431,35 +449,57 @@ function decodeImage(img) {
   var canvas = document.createElement('canvas');
   var ctx = canvas.getContext('2d');
 
-  // Etape 1 : image globale redimensionnee (max 1200px)
-  var maxDim = 1200;
-  var w = img.width, h = img.height;
-  if (w > maxDim || h > maxDim) {
-    if (w > h) { h = Math.round(h * maxDim / w); w = maxDim; }
-    else { w = Math.round(w * maxDim / h); h = maxDim; }
-  }
-  canvas.width = w; canvas.height = h;
-  ctx.drawImage(img, 0, 0, w, h);
-  try {
-    var imgData = ctx.getImageData(0, 0, w, h);
-    var res = window.jsQR(imgData.data, w, h, { inversionAttempts: "attemptBoth" });
-    if (res && res.data) return res.data;
-  } catch (e) {}
-
-  // Etape 2 : crop central a 60%
-  if (img.width > 300 && img.height > 300) {
-    var cw = Math.round(img.width * 0.6);
-    var ch = Math.round(img.height * 0.6);
-    var sx = Math.round((img.width - cw) / 2);
-    var sy = Math.round((img.height - ch) / 2);
-    canvas.width = cw; canvas.height = ch;
-    ctx.drawImage(img, sx, sy, cw, ch, 0, 0, cw, ch);
+  function tryScan(w, h, sx, sy, sw, sh) {
+    canvas.width = w; canvas.height = h;
+    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, w, h);
     try {
-      var cropData = ctx.getImageData(0, 0, cw, ch);
-      res = window.jsQR(cropData.data, cw, ch, { inversionAttempts: "attemptBoth" });
+      var data = ctx.getImageData(0, 0, w, h);
+      var res = window.jsQR(data.data, w, h, { inversionAttempts: "attemptBoth" });
       if (res && res.data) return res.data;
     } catch (e) {}
+    return null;
   }
+
+  var iw = img.naturalWidth || img.width;
+  var ih = img.naturalHeight || img.height;
+  if (!iw || !ih) return null;
+
+  // Passe 1 : Image globale redimensionnee (max 1000px)
+  var maxDim = 1000;
+  var w1 = iw, h1 = ih;
+  if (w1 > maxDim || h1 > maxDim) {
+    if (w1 > h1) { h1 = Math.round(h1 * maxDim / w1); w1 = maxDim; }
+    else { w1 = Math.round(w1 * maxDim / h1); h1 = maxDim; }
+  }
+  var res = tryScan(w1, h1, 0, 0, iw, ih);
+  if (res) return res;
+
+  // Passe 2 : Crop central a 60%
+  if (iw > 300 && ih > 300) {
+    var cw = Math.round(iw * 0.6);
+    var ch = Math.round(ih * 0.6);
+    var sx = Math.round((iw - cw) / 2);
+    var sy = Math.round((ih - ch) / 2);
+    res = tryScan(Math.min(cw, 800), Math.min(ch, 800), sx, sy, cw, ch);
+    if (res) return res;
+  }
+
+  // Passe 3 : Crop central resserre a 35% (pour QR codes petits ou eloignes)
+  if (iw > 400 && ih > 400) {
+    var cw3 = Math.round(iw * 0.35);
+    var ch3 = Math.round(ih * 0.35);
+    var sx3 = Math.round((iw - cw3) / 2);
+    var sy3 = Math.round((ih - ch3) / 2);
+    res = tryScan(Math.min(cw3, 600), Math.min(ch3, 600), sx3, sy3, cw3, ch3);
+    if (res) return res;
+  }
+
+  // Passe 4 : Pleine resolution si image < 1600px
+  if (iw <= 1600 && ih <= 1600 && (iw !== w1 || ih !== h1)) {
+    res = tryScan(iw, ih, 0, 0, iw, ih);
+    if (res) return res;
+  }
+
   return null;
 }
 
@@ -488,16 +528,38 @@ function processQrResult(raw) {
 function handleFileInput(e) {
   var file = e.target.files && e.target.files[0];
   if (!file) return;
+
+  var msgBox = document.getElementById('jsMsg');
+  if (msgBox) {
+    msgBox.className = 'msg ok show';
+    msgBox.innerHTML = '<b>Photo recue !</b>Analyse du QR code en cours...';
+  }
+
+  if (!window.jsQR) {
+    showErr('Scanner QR en attente', 'Le module QR se charge. Patientez un instant ou tapez directement le code de votre carte.', 7000);
+    return;
+  }
+
   var reader = new FileReader();
   reader.onload = function (rev) {
     var img = new Image();
     img.onload = function () {
-      var raw = decodeImage(img);
-      if (!processQrResult(raw)) {
-        showErr('QR code non detecte', 'La photo est floue ou le QR code n\'est pas net. Cadrez la carte au centre et reessayez, ou tapez directement le code de votre carte.', 7000);
+      try {
+        var raw = decodeImage(img);
+        if (!processQrResult(raw)) {
+          showErr("QR code non detecte", "La photo est floue ou le QR code n'est pas net. Cadrez la carte au centre bien eclairee, ou tapez directement le code de votre carte.", 8000);
+        }
+      } catch (err) {
+        showErr("Erreur d'analyse", "Impossible de lire le QR code sur cette image. Entrez le code manuellement.", 7000);
       }
     };
+    img.onerror = function () {
+      showErr("Erreur image", "Format d'image non supporte. Reessayez.", 5000);
+    };
     img.src = rev.target.result;
+  };
+  reader.onerror = function () {
+    showErr("Erreur lecture", "Impossible d'acceder a la photo.", 5000);
   };
   reader.readAsDataURL(file);
   e.target.value = '';
@@ -509,52 +571,43 @@ if (qrCapture) { qrCapture.addEventListener('change', handleFileInput); }
 var qrFile = document.getElementById('qrFile');
 if (qrFile) { qrFile.addEventListener('change', handleFileInput); }
 
-var choosePhotoBtn = document.getElementById('choosePhotoBtn');
-if (choosePhotoBtn) {
-  choosePhotoBtn.addEventListener('click', function () {
-    if (qrFile) qrFile.click();
-  });
-}
-
-var scanBtn = document.getElementById('scanBtn');
-if (scanBtn) {
-  scanBtn.addEventListener('click', async function () {
+// Support HTTPS live camera on scanLabel if available
+var scanLabel = document.getElementById('scanLabel');
+if (scanLabel) {
+  scanLabel.addEventListener('click', async function (ev) {
     var isHttps = (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1');
     var hasUserMedia = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && isHttps);
 
-    if (!hasUserMedia) {
-      // Contexte HTTP (ex: 10.20.30.1) : declenchement appareil photo natif
-      if (qrCapture) qrCapture.click();
-      return;
-    }
+    if (hasUserMedia) {
+      ev.preventDefault();
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({video: {facingMode: 'environment'}});
+        var wrap = document.getElementById('camWrap');
+        var video = document.getElementById('cam');
+        wrap.classList.add('on');
+        video.srcObject = stream;
+        await video.play();
 
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({video: {facingMode: 'environment'}});
-      var wrap = document.getElementById('camWrap');
-      var video = document.getElementById('cam');
-      wrap.classList.add('on');
-      video.srcObject = stream;
-      await video.play();
-
-      var canvas = document.createElement('canvas');
-      var loop = function () {
-        if (!stream) return;
-        if (video.videoWidth > 0 && video.videoHeight > 0) {
-          canvas.width = video.videoWidth;
-          canvas.height = video.videoHeight;
-          var ctx = canvas.getContext('2d');
-          ctx.drawImage(video, 0, 0);
-          var imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-          if (window.jsQR) {
-            var qr = window.jsQR(imgData.data, canvas.width, canvas.height);
-            if (qr && qr.data && processQrResult(qr.data)) return;
+        var canvas = document.createElement('canvas');
+        var loop = function () {
+          if (!stream) return;
+          if (video.videoWidth > 0 && video.videoHeight > 0) {
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            var ctx = canvas.getContext('2d');
+            ctx.drawImage(video, 0, 0);
+            var imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            if (window.jsQR) {
+              var qr = window.jsQR(imgData.data, canvas.width, canvas.height);
+              if (qr && qr.data && processQrResult(qr.data)) return;
+            }
           }
-        }
-        setTimeout(loop, 250);
-      };
-      loop();
-    } catch (err) {
-      if (qrCapture) qrCapture.click();
+          setTimeout(loop, 250);
+        };
+        loop();
+      } catch (err) {
+        if (qrCapture) qrCapture.click();
+      }
     }
   });
 }
